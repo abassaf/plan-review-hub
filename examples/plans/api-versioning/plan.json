@@ -1,0 +1,35 @@
+{
+  "id": "api-versioning",
+  "num": "01",
+  "title": "API versioning strategy",
+  "tagline": "Introduce /v1/ URL prefixes and a deprecation header so consumers can migrate safely.",
+  "branch": "feat/api-versioning",
+  "effort": "M — router changes + middleware + docs update",
+  "risk": "Medium (affects all API consumers; phased rollout recommended)",
+  "headline": "All 47 existing routes currently live at <code>/api/*</code> with no version segment. Adding <code>/v1/</code> prefix behind a compatibility layer lets old clients keep working while new clients opt in — no big-bang migration needed.",
+  "docs": ["proposal.md", "tasks.md"],
+  "decisions": [
+    {
+      "id": "compat_strategy",
+      "q": "Backward-compatibility approach",
+      "help": "Unversioned routes (/api/foo) still serve ~3 000 req/day from legacy clients. A redirect keeps them alive with zero consumer changes; a 410 forces them to update immediately.",
+      "options": [
+        { "v": "redirect", "label": "301-redirect /api/* to /v1/* for 6 months, then drop (recommended)", "recommended": true },
+        { "v": "parallel", "label": "Keep /api/* and /v1/* running in parallel indefinitely" },
+        { "v": "gone",     "label": "Return 410 Gone immediately on old paths (breaking)" }
+      ],
+      "default": "redirect"
+    },
+    {
+      "id": "version_header",
+      "q": "Deprecation signalling",
+      "help": "The Deprecation header (RFC 8594) lets clients log warnings automatically.",
+      "options": [
+        { "v": "header",   "label": "Add Deprecation + Sunset headers on all /api/* responses (recommended)", "recommended": true },
+        { "v": "body",     "label": "Include a _deprecated flag in every JSON response body" },
+        { "v": "none",     "label": "No active signalling — just update the docs" }
+      ],
+      "default": "header"
+    }
+  ]
+}

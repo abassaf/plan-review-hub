@@ -1,0 +1,34 @@
+{
+  "id": "dark-mode",
+  "num": "02",
+  "title": "Dark mode support",
+  "tagline": "Add a system-respecting dark colour scheme and a manual toggle persisted to localStorage.",
+  "branch": "feat/dark-mode",
+  "effort": "L — CSS token audit + component testing + toggle UI",
+  "risk": "Low (purely presentational; feature-flagged behind a toggle)",
+  "headline": "The current stylesheet uses ~40 hard-coded <code>hex</code> colours that bypass the design token layer. Dark mode requires auditing every colour usage, mapping each to a semantic token, then flipping the token set under <code>prefers-color-scheme: dark</code>.",
+  "docs": ["proposal.md", "tasks.md"],
+  "decisions": [
+    {
+      "id": "toggle_persistence",
+      "q": "How is the user's preference stored?",
+      "help": "localStorage survives tab close; a server cookie allows SSR to avoid flash-of-wrong-theme on load.",
+      "options": [
+        { "v": "localstorage", "label": "localStorage only — simple, client-side (recommended for now)", "recommended": true },
+        { "v": "cookie",       "label": "HttpOnly cookie — enables server-side theme rendering, no FOUC" },
+        { "v": "db",           "label": "Persist to user profile in DB — syncs across devices" }
+      ],
+      "default": "localstorage"
+    },
+    {
+      "id": "rollout",
+      "q": "Rollout strategy",
+      "help": "Behind a feature flag first means you can merge early and iterate without shipping a half-finished dark mode.",
+      "options": [
+        { "v": "flag",   "label": "Ship behind a feature flag; enable by default when 100% of components pass visual QA (recommended)", "recommended": true },
+        { "v": "direct", "label": "Ship directly — no flag, done when done" }
+      ],
+      "default": "flag"
+    }
+  ]
+}

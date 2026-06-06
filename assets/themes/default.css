@@ -1,0 +1,55 @@
+/*
+ * plan-review-hub — default neutral theme
+ *
+ * All colours and typographic decisions live here as CSS custom properties.
+ * To create your own theme: copy this file, change the values, and pass
+ * --theme path/to/your-theme.css (or set PLAN_HUB_THEME=...).
+ *
+ * See assets/themes/README.md for a description of every token.
+ */
+
+:root {
+  /* ── Backgrounds ─────────────────────────────────────────────────── */
+  --bg:            #f5f6f8;   /* page canvas                           */
+  --surface:       #ffffff;   /* card / panel background               */
+  --surface-warm:  #fafaf9;   /* slightly warm inset (headline block)  */
+
+  /* ── Borders ─────────────────────────────────────────────────────── */
+  --line:          #e4e7ec;   /* default border                        */
+  --line-2:        #d0d5dd;   /* slightly stronger border              */
+
+  /* ── Ink (text) ──────────────────────────────────────────────────── */
+  --ink-900:       #111827;   /* primary body text                     */
+  --ink-700:       #374151;   /* secondary / muted text                */
+  --ink-500:       #6b7280;   /* placeholder / helper text             */
+
+  /* ── Accent (indigo) ─────────────────────────────────────────────── */
+  --accent:        #4f46e5;   /* primary interactive colour            */
+  --accent-soft:   #eef2ff;   /* subtle accent background              */
+  --accent-dark:   #3730a3;   /* hover / active state                  */
+
+  /* ── Semantic colours ────────────────────────────────────────────── */
+  --green:         #059669;   /* success / done                        */
+  --green-bg:      #d1fae5;   /* success chip background               */
+  --yellow:        #d97706;   /* warning / in-progress                 */
+  --yellow-bg:     #fef3c7;   /* warning chip background               */
+  --red:           #dc2626;   /* danger / reject                       */
+  --red-bg:        #fee2e2;   /* danger chip background                */
+  --blue:          #2563eb;   /* info                                  */
+  --blue-bg:       #dbeafe;   /* info chip background                  */
+
+  /* ── Typography ──────────────────────────────────────────────────── */
+  --font-body:     ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+                   Roboto, Helvetica, Arial, sans-serif;
+  --font-display:  var(--font-body);   /* headings — override with a web font */
+  --font-mono:     ui-monospace, Menlo, "Cascadia Code", Consolas, monospace;
+
+  /* ── Radii ───────────────────────────────────────────────────────── */
+  --radius-sm:     8px;
+  --radius:        12px;
+  --radius-lg:     16px;
+  --radius-pill:   999px;
+
+  /* ── Shadows ─────────────────────────────────────────────────────── */
+  --shadow-sm:     0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+}

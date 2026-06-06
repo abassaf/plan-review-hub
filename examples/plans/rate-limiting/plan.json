@@ -1,0 +1,46 @@
+{
+  "id": "rate-limiting",
+  "num": "03",
+  "title": "API rate limiting",
+  "tagline": "Add per-IP and per-token sliding-window rate limits to protect the API from abuse.",
+  "branch": "feat/rate-limiting",
+  "effort": "S — middleware + Redis integration + tests",
+  "risk": "Low (additive middleware; no existing logic changed)",
+  "headline": "The API currently has no rate limiting. A single client can issue unlimited requests. Adding a sliding-window limiter at the middleware layer protects against both accidental stampedes and intentional abuse, with <code>429 Too Many Requests</code> + <code>Retry-After</code> responses.",
+  "docs": ["proposal.md", "tasks.md"],
+  "decisions": [
+    {
+      "id": "storage_backend",
+      "q": "Rate limit counter storage",
+      "help": "Redis is durable and works across multiple API instances. In-memory is simpler but resets on restart and does not share state in a multi-process deploy.",
+      "options": [
+        { "v": "redis",     "label": "Redis (Upstash or self-hosted) — durable, multi-instance safe (recommended)", "recommended": true },
+        { "v": "memory",    "label": "In-memory — zero deps, fine for single-process / local dev" },
+        { "v": "both",      "label": "In-memory fallback when Redis unavailable; Redis in production" }
+      ],
+      "default": "redis"
+    },
+    {
+      "id": "limit_scope",
+      "q": "What is the rate limit key?",
+      "help": "Per-IP limits protect against anonymous abuse. Per-token limits are fairer for authenticated multi-tenant APIs.",
+      "options": [
+        { "v": "ip_and_token", "label": "Both: per-IP for unauthenticated routes, per-token for authenticated routes (recommended)", "recommended": true },
+        { "v": "ip_only",      "label": "Per-IP only (simpler, less fair for NAT users)" },
+        { "v": "token_only",   "label": "Per-token only (unauthenticated routes stay unlimited)" }
+      ],
+      "default": "ip_and_token"
+    },
+    {
+      "id": "default_quota",
+      "q": "Default quota for authenticated API tokens",
+      "help": "Start conservative; quotas can be raised per-tenant without a deployment.",
+      "options": [
+        { "v": "1000rpm",  "label": "1 000 req / min per token (recommended starting point)", "recommended": true },
+        { "v": "100rpm",   "label": "100 req / min (very conservative)" },
+        { "v": "10krpm",   "label": "10 000 req / min (generous)" }
+      ],
+      "default": "1000rpm"
+    }
+  ]
+}

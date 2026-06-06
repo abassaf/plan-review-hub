@@ -1,0 +1,20 @@
+{
+  "_comment": "plan-review-hub configuration. All fields have built-in defaults. Override via env vars or this file.",
+  "_env_vars": {
+    "PLAN_HUB_PORT":      "TCP port to listen on (default: 8770)",
+    "PLAN_HUB_HOST":      "Bind address (default: 0.0.0.0)",
+    "PLAN_HUB_PLANS_DIR": "Directory containing plan subfolders (default: plans)",
+    "PLAN_HUB_SOURCE":    "Plan source: auto | generic | openspec (default: auto)",
+    "PLAN_HUB_THEME":     "Path to a CSS theme file (default: assets/themes/default.css)",
+    "PLAN_HUB_STATE_DIR": "Directory for feedback/progress state (default: .planning-hub)",
+    "PLAN_HUB_TOKEN":     "Optional shared-secret token; if set, requests must supply ?token=<value>"
+  },
+
+  "port":      8770,
+  "host":      "0.0.0.0",
+  "plansDir":  "plans",
+  "source":    "auto",
+  "themePath": "assets/themes/default.css",
+  "stateDir":  ".planning-hub",
+  "token":     null
+}
