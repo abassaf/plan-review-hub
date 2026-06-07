@@ -141,11 +141,35 @@ As each subagent completes phases, update `.planning-hub/progress.json`:
 }
 ```
 
-States: `not_started` | `in_progress` | `done`
+States: `not_started` | `in_progress` | `done` (extend with project-specific states as
+needed, e.g. `planned`, `ready_to_ship`, `blocked` — each mapped to a status badge).
 
 The hub reflects this live — the hub index shows a progress chip per plan, and each plan
 page shows a "Completed / Remaining" card. The reviewer can watch progress at
 `http://<ip>:8770/`.
+
+### Keep the hub current — update it after EVERY status change (not just at the end)
+
+The hub is the reviewer's single source of truth, so it must never drift from reality.
+**Whenever a plan's real state changes, immediately update its entry on the hub and
+restart the server** — treat this as part of the action, not an afterthought. Update on
+each of these transitions:
+
+- **approved** → reflect the verdict/decisions the reviewer submitted
+- **dispatched** → `in_progress` with the worktree branch + agent
+- **implemented / committed** → record what landed + the commit
+- **PR opened / CI green** → e.g. a `ready_to_ship` state with the PR number
+- **merged / deployed / shipped** → `done`; if the project separates "open proposals"
+  from "past reviews", **move the shipped plan into the past-reviews/completed section**
+- **backlogged or deferred** → mark it so, with the reason
+- **plan fully fleshed out** (design + spec written) → e.g. a `planned` state
+
+Also surface each plan's **open decisions** on its page (don't leave the decisions block
+empty) so the reviewer always has something actionable. After any edit: re-run the
+server's syntax check, restart it, and verify the index + the affected plan page render.
+
+If you find yourself reporting progress to the user without having updated the hub, that's
+the signal you've drifted — update the hub first, then report.
 
 ---
 
