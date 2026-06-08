@@ -1,26 +1,48 @@
 # plan-review-hub
 
-A Claude Code skill that turns multi-step work plans into a served LAN hub for review,
-approval, feedback collection, and isolated worktree dispatch.
+A provider-agnostic coding-agent skill that turns multi-step work plans into a served
+LAN hub for review, approval, feedback collection, and isolated worktree dispatch.
 
 ## What it is
 
-You describe work to Claude. Claude breaks it into discrete plans. A local web server
-renders each plan as a styled page with decision questions and a feedback form. You review,
-answer the decisions, set a verdict (approve / approve with changes / hold / reject), and
-submit. Claude reads the feedback and dispatches each approved plan to its own git worktree
-and subagent — nothing merges to `main` until you say so.
+You describe work to a coding agent. The agent breaks it into discrete plans. A local web
+server renders each plan as a styled page with decision questions and a feedback form. You
+review, answer the decisions, set a verdict (approve / approve with changes / hold /
+reject), and submit. The agent reads the feedback and dispatches each approved plan to its
+own git worktree and implementation agent. Nothing merges to `main` until you say so.
 
 **Zero external dependencies.** The server runs with `python3` (stdlib only) or
 `node` (built-ins only). No npm install. No pip install.
 
 ## Install
 
+### Codex
+
+Clone or copy this repository into Codex's local skills directory:
+
+```bash
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
+git clone https://github.com/abassaf/plan-review-hub.git \
+  "${CODEX_HOME:-$HOME/.codex}/skills/plan-review-hub"
+```
+
+For a local checkout you are editing, copy the folder instead:
+
+```bash
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
+cp -R /path/to/plan-review-hub "${CODEX_HOME:-$HOME/.codex}/skills/plan-review-hub"
+```
+
+Codex reads `SKILL.md` for trigger metadata and `agents/openai.yaml` for optional UI
+metadata.
+
+### Claude Code
+
 ```bash
 npx skills add abassaf/plan-review-hub --copy
 ```
 
-Or clone directly:
+### Direct clone
 
 ```bash
 git clone https://github.com/abassaf/plan-review-hub.git
@@ -28,7 +50,10 @@ git clone https://github.com/abassaf/plan-review-hub.git
 
 ## Quickstart
 
-1. **Ask Claude to generate plans** from a brief:
+1. **Ask your coding agent to generate plans** from a brief:
+   > "Use $plan-review-hub to create reviewable plans for [your work]"
+
+   Claude Code users can also say:
    > "Read SKILL.md and create plans for [your work]"
 
 2. **Start the hub:**
@@ -41,10 +66,10 @@ git clone https://github.com/abassaf/plan-review-hub.git
 
 3. **Review each plan**, answer the decision questions, set a verdict, submit.
 
-4. **Tell Claude to read the feedback** and dispatch approved plans:
+4. **Tell the agent to read the feedback** and dispatch approved plans:
    > "Read the feedback and dispatch the approved plans."
 
-5. **Track progress** — the hub shows live implementation status as Claude works.
+5. **Track progress** - the hub shows live implementation status as the agent works.
 
 ## Try the examples
 
@@ -139,7 +164,7 @@ Feedback and progress are written to `.planning-hub/` (gitignored by default):
 └── progress.json
 ```
 
-Update `progress.json` manually or have Claude update it as subagents land changes.
+Update `progress.json` manually or have the implementing agent update it as plans land.
 
 ## Pages
 
@@ -150,6 +175,23 @@ Update `progress.json` manually or have Claude update it as subagents land chang
 | `/feedback` | JSON dump of all collected feedback |
 | `/assets/...` | Theme CSS and static assets |
 | `/healthz` | Health check — returns `{"status":"ok"}` |
+
+## Validation
+
+Run the repository-local validation script before publishing skill changes:
+
+```bash
+python3 scripts/validate_skill.py --smoke
+```
+
+The validator checks skill metadata, Codex UI metadata, JSON plan files, server syntax, and
+an optional Python server smoke test. Node syntax is checked when `node` is installed.
+
+## Provider notes
+
+The workflow is intentionally provider-neutral. Provider-specific install and dispatch
+details live in `references/provider-notes.md` so `SKILL.md` can stay focused on the core
+plan-review-dispatch cycle.
 
 ## Feedback fields
 

@@ -2,14 +2,15 @@
 name: plan-review-hub
 description: >
   Serve a set of work plans as a styled LAN hub so a human reviewer can approve,
-  decide, and give structured feedback on each one — then dispatch each approved
-  plan to its own isolated git-worktree subagent and track implementation
-  progress live. Use this skill when the user wants to plan multi-step work,
-  review proposals via a browser, approve individual plans, and have each plan
-  implemented in isolation before merging.
+  decide, and give structured feedback on each one, then dispatch each approved
+  plan to its own isolated git-worktree implementation agent and track progress
+  live. Use this skill in Codex, Claude Code, or another local coding-agent
+  workflow when the user wants to plan multi-step work, review proposals via a
+  browser, approve individual plans, and have each plan implemented in isolation
+  before merging.
 ---
 
-# plan-review-hub — workflow instructions
+# plan-review-hub - workflow instructions
 
 This skill packages a complete plan → review → approve → dispatch → track cycle.
 Follow the numbered steps in order. All paths are relative to the project root unless stated.
@@ -92,11 +93,11 @@ Plans with `reject` are dropped from the queue.
 
 ---
 
-## 4. Dispatch approved plans to worktree subagents
+## 4. Dispatch approved plans to worktree implementation agents
 
-For each approved plan, create an isolated git worktree on a new branch and launch
-a dedicated subagent scoped to that directory. This keeps the base branch untouched
-until each plan is explicitly merged.
+For each approved plan, create an isolated git worktree on a new branch and launch,
+resume, or manually continue a dedicated implementation agent scoped to that directory.
+This keeps the base branch untouched until each plan is explicitly merged.
 
 ```bash
 # 1. Identify base branch
@@ -105,9 +106,9 @@ BASE=$(git symbolic-ref --short HEAD)   # e.g. main
 # 2. For each approved plan (replace <branch> from plan.json):
 git worktree add ../worktrees/<id> -b <branch>
 
-# 3. Copy the plan into the worktree for the subagent's reference
+# 3. Copy the plan into the worktree for the implementation agent's reference
 cp -r plans/<id> ../worktrees/<id>/.plan-context/
-# (or the subagent can read it from the main worktree via relative path)
+# (or the agent can read it from the main worktree via relative path)
 ```
 
 **Dependency setup note:** if the project uses a bundler (Vite, Turbopack, webpack),
@@ -115,19 +116,27 @@ do a real `npm install` (or `pnpm install`) inside each worktree rather than sym
 `node_modules` from the main tree — some bundlers reject symlinked module directories.
 For type-check-only or test-only worktrees, a symlink is fine.
 
-**Launch a subagent per plan** with a prompt that includes:
+**Launch one implementation agent per plan** with a prompt that includes:
 - The plan folder (`plans/<id>/`) and feedback file (`.planning-hub/feedback/<id>.json`)
 - The reviewer's decisions and notes from the feedback file
 - The instruction: implement everything in this worktree; do not touch the base branch
 - The rule: **commits must NOT add a `Co-Authored-By` trailer**
 
-Keep one subagent per plan. Do not share worktrees between plans.
+Keep one implementation agent per plan. Do not share worktrees between plans.
+
+If the current provider does not expose background agents or delegation tools, keep the
+same isolation guarantees by doing the work manually in the relevant worktree. If plans
+overlap heavily and the reviewer approves a combined implementation, record that choice in
+`.planning-hub/progress.json` before proceeding.
+
+For provider-specific install and dispatch notes, read `references/provider-notes.md` only
+when you need Codex or Claude Code details.
 
 ---
 
 ## 5. Track progress
 
-As each subagent completes phases, update `.planning-hub/progress.json`:
+As each implementation agent completes phases, update `.planning-hub/progress.json`:
 
 ```json
 {

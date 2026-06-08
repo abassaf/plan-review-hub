@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Review Hub"
+  short_description: "Review and dispatch implementation plans"
+  default_prompt: "Use $plan-review-hub to turn this work into reviewable plans, serve the LAN hub, and dispatch approved plans safely."

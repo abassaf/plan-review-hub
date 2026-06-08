@@ -89,7 +89,7 @@ Location: `<stateDir>/feedback/<id>.json`
 
 ---
 
-## progress.json (input — updated by Claude as subagents land)
+## progress.json (input — updated as implementation agents land changes)
 
 Location: `<stateDir>/progress.json`
 
