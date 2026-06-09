@@ -244,8 +244,21 @@ must include `?token=mysecret`; subsequent requests use a session cookie.
 
 MIT — Copyright (c) 2026 Anthony Assaf
 
-## Acknowledgements
+## Acknowledgements & disclaimers
 
-plan-review-hub interoperates with the [OpenSpec](https://github.com/Fission-AI/OpenSpec)
-convention (MIT-licensed). This project is independent and not affiliated with or
-endorsed by OpenSpec.
+plan-review-hub is a provider-agnostic, independent open-source project. It is designed
+to work with a range of third-party coding agents and tools, but it is **not affiliated
+with, sponsored by, or endorsed by** any of them. Product names are used only to
+describe compatibility.
+
+- **Claude** and **Claude Code** are products of Anthropic. This project is not
+  affiliated with or endorsed by Anthropic.
+- **Codex** is a product of OpenAI. This project is not affiliated with or endorsed by
+  OpenAI.
+- **OpenSpec** is an independent, MIT-licensed open-source project
+  ([Fission-AI/OpenSpec](https://github.com/Fission-AI/OpenSpec)); plan-review-hub
+  interoperates with its convention but is not affiliated with or endorsed by it.
+
+All other product names, logos, and trademarks are the property of their respective
+owners. Their mention here denotes compatibility only and implies no affiliation or
+endorsement.
