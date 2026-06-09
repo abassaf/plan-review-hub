@@ -119,7 +119,7 @@ See `docs/plan-format.md` for the full schema.
 
 ## OpenSpec adapter
 
-If your project uses [OpenSpec](https://github.com/abassaf/openspec) and has an
+If your project uses [OpenSpec](https://github.com/Fission-AI/OpenSpec) and has an
 `openspec/changes/` directory, the hub auto-detects it when no `plans/` directory exists.
 Set `--source openspec` to force it. See `examples/openspec-note.md` for details.
 
@@ -243,3 +243,9 @@ must include `?token=mysecret`; subsequent requests use a session cookie.
 ## License
 
 MIT — Copyright (c) 2026 Anthony Assaf
+
+## Acknowledgements
+
+plan-review-hub interoperates with the [OpenSpec](https://github.com/Fission-AI/OpenSpec)
+convention (MIT-licensed). This project is independent and not affiliated with or
+endorsed by OpenSpec.
