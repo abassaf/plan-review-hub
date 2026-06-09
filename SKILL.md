@@ -216,7 +216,7 @@ Common patterns:
 
 ## 7. Findings audits (optional visual report)
 
-A **findings audit** is a sibling artifact to a plan. A plan answers *what should we build?*;
+A **findings audit** is a sibling artefact to a plan. A plan answers *what should we build?*;
 an audit answers *where does this problem already exist, what does the fix look like, and
 which instances are done?* It renders cross-file code findings — the same bug, anti-pattern,
 deprecated call, or risky idiom repeated across many files — as before/after diffs with a

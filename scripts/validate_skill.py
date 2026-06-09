@@ -243,7 +243,7 @@ def smoke_server() -> None:
 
 
 def check_provider_wording() -> None:
-    """Keep provider names out of core workflow text except labeled provider sections."""
+    """Keep provider names out of core workflow text except labelled provider sections."""
     skill = read_text(ROOT / "SKILL.md")
     provider_section = "For provider-specific install and dispatch notes"
     if provider_section not in skill:

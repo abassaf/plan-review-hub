@@ -133,7 +133,7 @@ If `progress.json` does not exist, every plan is treated as "not started".
 
 Location: `<auditsDir>/<id>.json` (default `<stateDir>/audits/<id>.json`)
 
-A **findings audit** is a sibling artifact to a plan. Where a plan answers "what should
+A **findings audit** is a sibling artefact to a plan. Where a plan answers "what should
 we build?", an audit answers "where does this problem already exist, what does the fix look
 like, and which instances are done?". The hub renders it at `/audit/<id>` as a before/after
 report with a status badge per finding and headline counts.

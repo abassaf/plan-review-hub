@@ -391,7 +391,7 @@ def get_progress():
 # ─── audit loading ─────────────────────────────────────────────────────────────
 # A "findings audit" renders cross-file code findings (the same bug/anti-pattern
 # repeated across many files) as before/after diffs with a per-finding status.
-# Audits are standalone artifacts; an audit may optionally name a planId to link
+# Audits are standalone artefacts; an audit may optionally name a planId to link
 # it to a plan. They are loaded from <auditsDir> (default <stateDir>/audits).
 
 def audits_dir():
