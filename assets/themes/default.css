@@ -38,6 +38,12 @@
   --blue:          #2563eb;   /* info                                  */
   --blue-bg:       #dbeafe;   /* info chip background                  */
 
+  /* ── Diff lines (findings audit before/after panes) ──────────────── */
+  --diff-removed-bg:  rgba(220,38,38,.10);  /* removed line background  */
+  --diff-removed-ink: #b42318;              /* removed line text        */
+  --diff-added-bg:    rgba(5,150,105,.12);  /* added line background    */
+  --diff-added-ink:   #067647;              /* added line text          */
+
   /* ── Typography ──────────────────────────────────────────────────── */
   --font-body:     ui-sans-serif, system-ui, -apple-system, "Segoe UI",
                    Roboto, Helvetica, Arial, sans-serif;

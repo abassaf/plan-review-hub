@@ -36,6 +36,7 @@ function loadConfig() {
     source:    "auto",
     themePath: "assets/themes/default.css",
     stateDir:  ".planning-hub",
+    auditsDir: null,
     token:     null,
   };
   // config file
@@ -56,6 +57,7 @@ function loadConfig() {
     PLAN_HUB_SOURCE:    ["source",    String],
     PLAN_HUB_THEME:     ["themePath", String],
     PLAN_HUB_STATE_DIR: ["stateDir",  String],
+    PLAN_HUB_AUDITS_DIR:["auditsDir", String],
     PLAN_HUB_TOKEN:     ["token",     String],
   };
   for (const [envKey, [cfgKey, cast]] of Object.entries(envMap)) {
@@ -81,6 +83,7 @@ function applyCLIArgs() {
       "--source": ["source",    String],
       "--theme":  ["themePath", String],
       "--state":  ["stateDir",  String],
+      "--audits": ["auditsDir", String],
       "--token":  ["token",     String],
     };
     if (flag in flagMap) {
@@ -122,6 +125,56 @@ function getProgress() {
   const p = path.join(stateDir(), "progress.json");
   if (!fs.existsSync(p)) return {};
   try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (_) { return {}; }
+}
+
+// ─── audit loading ───────────────────────────────────────────────────────────────
+// A "findings audit" renders cross-file code findings (the same bug/anti-pattern
+// repeated across many files) as before/after diffs with a per-finding status.
+// Audits load from <auditsDir> (default <stateDir>/audits); an audit may name a
+// planId to link it to a plan.
+
+function auditsDir() {
+  return CFG.auditsDir ? abs(CFG.auditsDir) : path.join(stateDir(), "audits");
+}
+
+function normaliseAudit(a, fallbackId) {
+  a.id       ??= fallbackId;
+  a.title    ??= a.id.replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  a.planId   ??= null;
+  a.pattern  ??= {};
+  a.why      ??= "";
+  a.summary  ??= "";
+  a.findings ??= [];
+  return a;
+}
+
+function loadAudits() {
+  const d = auditsDir();
+  if (!fs.existsSync(d)) return [];
+  const audits = [];
+  for (const name of fs.readdirSync(d).sort()) {
+    if (!name.endsWith(".json")) continue;
+    let a;
+    try { a = JSON.parse(fs.readFileSync(path.join(d, name), "utf8")); } catch (_) { continue; }
+    if (typeof a !== "object" || a === null || Array.isArray(a)) continue;
+    audits.push(normaliseAudit(a, name.slice(0, -".json".length)));
+  }
+  return audits;
+}
+
+function getAudit(auditId) {
+  return loadAudits().find(a => a.id === auditId) || null;
+}
+
+function auditCounts(audit) {
+  let fixed = 0, bug = 0, fine = 0;
+  for (const f of audit.findings || []) {
+    const st = f.status || "bug";
+    if (st === "fixed") fixed++;
+    else if (st === "fine") fine++;
+    else bug++;
+  }
+  return { fixed, bug, fine, total: (audit.findings || []).length };
 }
 
 function localIPs() {
@@ -460,6 +513,43 @@ textarea:focus{outline:2px solid var(--accent);border-color:transparent}
 .hub-progress{display:flex;gap:16px;flex-wrap:wrap;margin:16px 0 6px}
 .hub-progress .stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:10px 14px;font-size:13px}
 .hub-progress .stat b{display:block;font-size:22px;font-weight:800;color:var(--accent)}
+/* ── audit reports ── */
+.audit-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:18px 0}
+@media(max-width:700px){.audit-stats{grid-template-columns:1fr}}
+.audit-stats .stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;text-align:center}
+.audit-stats .stat b{display:block;font-size:28px;font-weight:800;line-height:1.1}
+.audit-stats .stat span{font-size:12px;color:var(--ink-500);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.stat-fixed b{color:var(--green)}
+.stat-bug b{color:var(--red)}
+.stat-total b{color:var(--blue)}
+.why-box{background:var(--blue-bg);border-left:3px solid var(--blue);border-radius:var(--radius);padding:13px 16px;font-size:13.5px;color:var(--ink-900);margin:14px 0}
+.why-box code{background:rgba(0,0,0,.06);color:inherit}
+.audit-section-title{font:700 14px/1.2 var(--font-display);margin:26px 0 8px;display:flex;align-items:center;gap:8px}
+.audit-section-title .n{color:var(--ink-500);font-weight:600;font-size:12.5px}
+.audit-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);margin:12px 0;overflow:hidden;box-shadow:var(--shadow-sm)}
+.ac-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;background:var(--surface-warm);border-bottom:1px solid var(--line)}
+.ac-file{font-family:var(--font-mono);font-size:12.5px;color:var(--ink-900)}
+.ac-line{font-size:12px;color:var(--ink-500)}
+.ac-ref{margin-left:auto;font-size:12px}
+.badge{display:inline-flex;align-items:center;border-radius:var(--radius-pill);padding:3px 10px;font:700 11px/1.4 var(--font-display)}
+.badge-fixed{background:var(--green-bg);color:var(--green)}
+.badge-bug{background:var(--red-bg);color:var(--red)}
+.badge-fine{background:var(--blue-bg);color:var(--blue)}
+.diff-wrap{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
+@media(max-width:700px){.diff-wrap{grid-template-columns:1fr}}
+.diff-pane{background:var(--surface);padding:12px 14px;min-width:0}
+.diff-pane h4{font:700 10.5px/1 var(--font-display);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-500);margin:0 0 8px}
+.diff-pane pre{margin:0;overflow:auto;font-family:var(--font-mono);font-size:12px;line-height:1.55}
+.line{display:block;padding:0 7px;border-radius:4px;white-space:pre}
+.line-removed{background:var(--diff-removed-bg,rgba(220,38,38,.10));color:var(--diff-removed-ink,#b42318)}
+.line-added{background:var(--diff-added-bg,rgba(5,150,105,.12));color:var(--diff-added-ink,#067647)}
+.line-neutral{color:var(--ink-700)}
+.audit-explain{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--line);font-size:13px;color:var(--ink-700)}
+.audit-explain .text{flex:1;min-width:200px}
+.verdict{display:inline-flex;align-items:center;border-radius:var(--radius-pill);padding:4px 11px;font:700 11px/1.4 var(--font-display);white-space:nowrap}
+.verdict-fixed{background:var(--green-bg);color:var(--green)}
+.verdict-todo{background:var(--yellow-bg);color:var(--yellow)}
+.verdict-fine{background:var(--blue-bg);color:var(--blue)}
 </style>
 </head>
 <body>
@@ -525,13 +615,33 @@ function renderIndex(plans, themeCSS) {
 </a>`;
   }).join("");
 
+  const audits = loadAudits();
   const statsHtml = `
 <div class='hub-progress'>
   <div class='stat'><b>${total}</b> Plans</div>
   <div class='stat'><b>${decided}</b> Reviewed</div>
   <div class='stat'><b>${doneCount}</b> Implemented</div>
   <div class='stat'><b>${total - doneCount}</b> Remaining</div>
+  ${audits.length ? `<div class='stat'><b>${audits.length}</b> Audits</div>` : ""}
 </div>`;
+
+  let auditsSection = "";
+  if (audits.length) {
+    const auditRows = audits.map(a => {
+      const { fixed, bug, total: atotal } = auditCounts(a);
+      const sub = `${fixed} fixed · ${bug} open · ${atotal} scanned`;
+      return `
+<a class='index-row' href='/audit/${esc(a.id)}'>
+  <div class='num'>&#9670;</div>
+  <div class='body'>
+    <h3>${esc(a.title)}</h3>
+    <p>${esc((a.summary || "").trim())}</p>
+  </div>
+  <div class='aside'><div style='font-size:11px;color:var(--ink-500)'>${esc(sub)}</div></div>
+</a>`;
+    }).join("");
+    auditsSection = `<div class='eyebrow' style='margin:26px 0 4px'>Findings audits</div>${auditRows}`;
+  }
 
   const body = `
 <div class='wrap'>
@@ -542,6 +652,7 @@ function renderIndex(plans, themeCSS) {
   </div>
   ${statsHtml}
   ${rows}
+  ${auditsSection}
   <div class='card' style='margin-top:20px'>
     <h2>How this works</h2>
     <p style='font-size:13.5px;color:var(--ink-700)'>
@@ -620,6 +731,18 @@ function renderPlan(plan, plans, themeCSS) {
     : "";
 
   const progressCard = renderProgressCard(pid, progress);
+
+  // audits linked to this plan
+  const linkedAudits = loadAudits().filter(a => a.planId === pid);
+  let auditsCard = "";
+  if (linkedAudits.length) {
+    const links = linkedAudits.map(a => {
+      const { fixed, bug, total: atotal } = auditCounts(a);
+      return `<li><a href='/audit/${esc(a.id)}'>${esc(a.title)}</a> <span style='color:var(--ink-500);font-size:12px'>— ${fixed} fixed · ${bug} open · ${atotal} scanned</span></li>`;
+    }).join("");
+    auditsCard = `<div class='card'><h2>Findings audits</h2><ul class='md-ul'>${links}</ul></div>`;
+  }
+
   const savedNotes    = esc(fb.notes || "");
   const savedPriority = esc(String(fb.priority || ""));
   const savedAssignee = esc(fb.assignee || "");
@@ -636,6 +759,7 @@ function renderPlan(plan, plans, themeCSS) {
     <div class='main-col'>
       ${headlineHtml}
       ${progressCard}
+      ${auditsCard}
       ${docSections}
       <div class='card fb'>
         <h2>Your feedback</h2>
@@ -722,6 +846,136 @@ function renderPlan(plan, plans, themeCSS) {
   return pageShell(`${plan.title} — Plan Review Hub`, crumbs, body, themeCSS);
 }
 
+const AUDIT_BADGE = {
+  fixed: ["badge-fixed", "Fixed"],
+  bug:   ["badge-bug",   "Bug"],
+  fine:  ["badge-fine",  "Fine"],
+};
+const AUDIT_SECTIONS = [
+  ["fixed", "&#9989; Fixed"],
+  ["bug",   "&#9888;&#65039; Needs fixing"],
+  ["fine",  "&#128064; Reviewed &mdash; confirmed fine"],
+];
+
+function renderDiffLines(lines, defaultKind) {
+  const out = [];
+  for (const ln of lines || []) {
+    let text, kind;
+    if (ln && typeof ln === "object") {
+      text = ln.text ?? "";
+      kind = ln.kind ?? defaultKind;
+    } else {
+      text = ln; kind = defaultKind;
+    }
+    if (!["removed", "added", "neutral"].includes(kind)) kind = defaultKind;
+    out.push(`<span class='line line-${kind}'>${esc(text)}</span>`);
+  }
+  return out.join("") || "<span class='line line-neutral'></span>";
+}
+
+function renderFinding(f) {
+  const status = f.status || "bug";
+  const [badgeCls, badgeLabel] = AUDIT_BADGE[status] || ["badge-bug", status];
+  const fileHtml = esc(f.file || "(unknown file)");
+  const lineHtml = (f.line !== undefined && f.line !== null) ? `<span class='ac-line'>line ${esc(String(f.line))}</span>` : "";
+  const refHtml = f.ref ? `<span class='ac-ref'><a href='${esc(f.ref)}' target='_blank' rel='noopener'>reference &#8599;</a></span>` : "";
+
+  const beforeHtml = renderDiffLines(f.before, "removed");
+  const afterHtml = renderDiffLines(f.after, "added");
+
+  let vtext, vcls;
+  if (status === "fixed") {
+    vtext = f.verdict || (f.commit ? `Fixed in ${f.commit}` : "Fixed");
+    vcls = "verdict-fixed";
+  } else if (status === "fine") {
+    vtext = f.verdict || "No change needed";
+    vcls = "verdict-fine";
+  } else {
+    vtext = f.verdict || "To fix";
+    vcls = "verdict-todo";
+  }
+
+  return `
+<div class='audit-card'>
+  <div class='ac-head'>
+    <span class='badge ${badgeCls}'>${badgeLabel}</span>
+    <span class='ac-file'>${fileHtml}</span>
+    ${lineHtml}
+    ${refHtml}
+  </div>
+  <div class='diff-wrap'>
+    <div class='diff-pane'><h4>Before</h4><pre>${beforeHtml}</pre></div>
+    <div class='diff-pane'><h4>After</h4><pre>${afterHtml}</pre></div>
+  </div>
+  <div class='audit-explain'>
+    <span class='text'>${esc(f.explanation || "")}</span>
+    <span class='verdict ${vcls}'>${esc(vtext)}</span>
+  </div>
+</div>`;
+}
+
+function renderAudit(audit, themeCSS) {
+  const aid = audit.id;
+  const { fixed, bug, total } = auditCounts(audit);
+
+  const pattern = audit.pattern || {};
+  let patHtml = "";
+  if (pattern.buggy || pattern.correct) {
+    const parts = [];
+    if (pattern.buggy) parts.push(`buggy <code>${esc(pattern.buggy)}</code>`);
+    if (pattern.correct) parts.push(`correct <code>${esc(pattern.correct)}</code>`);
+    patHtml = parts.join(" &rarr; ");
+  }
+
+  const whyHtml = audit.why ? `<div class='why-box'>${audit.why}</div>` : "";
+
+  const statsHtml = `
+<div class='audit-stats'>
+  <div class='stat stat-fixed'><b>${fixed}</b><span>Fixed</span></div>
+  <div class='stat stat-bug'><b>${bug}</b><span>Needs fixing</span></div>
+  <div class='stat stat-total'><b>${total}</b><span>Total scanned</span></div>
+</div>`;
+
+  const byStatus = { fixed: [], bug: [], fine: [] };
+  for (const f of audit.findings || []) {
+    (byStatus[f.status] || byStatus.bug).push(f);
+  }
+
+  const sectionsHtml = AUDIT_SECTIONS.map(([status, label]) => {
+    const items = byStatus[status] || [];
+    if (!items.length) return "";
+    const cards = items.map(renderFinding).join("");
+    return `<div class='audit-section-title'>${label} <span class='n'>${items.length}</span></div>${cards}`;
+  }).join("");
+
+  const today = new Date().toISOString().slice(0, 10);
+  const summary = esc(audit.summary || "") || `${fixed} fixed · ${bug} open · ${total} scanned`;
+
+  const planLink = audit.planId
+    ? `<div class='kv'>Plan<b><a href='/plan/${esc(audit.planId)}'>${esc(audit.planId)}</a></b></div>`
+    : "";
+
+  const body = `
+<div class='wrap'>
+  <div class='hero'>
+    <div class='eyebrow'>Findings audit</div>
+    <h1 class='page-title'>${esc(audit.title)}</h1>
+    ${patHtml ? `<p class='lead'>${patHtml}</p>` : ""}
+    <div class='meta'>
+      <div class='kv'>Audit ID<b><code>${esc(aid)}</code></b></div>
+      ${planLink}
+    </div>
+  </div>
+  ${statsHtml}
+  ${whyHtml}
+  ${sectionsHtml || "<div class='empty-state'><h2>No findings</h2><p>This audit has no findings yet.</p></div>"}
+  <div class='footer'>Generated ${today} · audit <code>${esc(aid)}</code> · ${summary}</div>
+</div>`;
+
+  const crumbs = `<a href='/'>Hub</a> &nbsp;/&nbsp; Audit`;
+  return pageShell(`${audit.title} — Findings audit`, crumbs, body, themeCSS);
+}
+
 // ─── token auth ─────────────────────────────────────────────────────────────────
 
 const COOKIE_NAME = "prh_token";
@@ -800,6 +1054,16 @@ function handleRequest(req, res) {
       const data = Object.fromEntries(plans.map(p => [p.id, getFeedback(p.id)]));
       return send(res, 200, JSON.stringify(data, null, 2), "application/json", extraHeaders);
     }
+    if (normPath === "/audits") {
+      const data = Object.fromEntries(loadAudits().map(a => [a.id, a]));
+      return send(res, 200, JSON.stringify(data, null, 2), "application/json", extraHeaders);
+    }
+    if (normPath.startsWith("/audit/")) {
+      const aid = normPath.slice("/audit/".length).replace(/^\/+|\/+$/g, "");
+      const audit = getAudit(aid);
+      if (!audit) return send(res, 404, `<div style='font-family:sans-serif;padding:40px'><h1>404</h1><p>Unknown audit '${esc(aid)}'</p><a href='/'>Back</a></div>`, "text/html; charset=utf-8");
+      return send(res, 200, renderAudit(audit, themeCSS), "text/html; charset=utf-8", extraHeaders);
+    }
     if (normPath.startsWith("/plan/")) {
       const pid = normPath.slice("/plan/".length).replace(/^\/+|\/+$/g, "");
       const plan = planById[pid];
@@ -850,6 +1114,7 @@ fs.mkdirSync(feedbackDir(), { recursive: true });
 const server = http.createServer(handleRequest);
 server.listen(CFG.port, CFG.host, () => {
   const plans = loadPlans();
+  const audits = loadAudits();
   const ips = localIPs();
   console.log(`\nplan-review-hub running on ${CFG.host}:${CFG.port}`);
   console.log(`  source: ${CFG.source}  plans: ${abs(CFG.plansDir)}  state: ${stateDir()}`);

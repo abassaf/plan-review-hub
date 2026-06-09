@@ -165,6 +165,11 @@ restart the server** — treat this as part of the action, not an afterthought. 
 each of these transitions:
 
 - **approved** → reflect the verdict/decisions the reviewer submitted
+- **work started** → flip the plan from its `backlogged`/`planned`/`not_started` state to
+  `in_progress` **the moment you begin, before writing code** — not when you finish. This
+  applies even when you implement directly in the main repo with no separate worktree (set
+  `branch` to e.g. `main (combined local implementation)`). A plan that is being worked on
+  must never still read `backlogged` on the hub.
 - **dispatched** → `in_progress` with the worktree branch + agent
 - **implemented / committed** → record what landed + the commit
 - **PR opened / CI green** → e.g. a `ready_to_ship` state with the PR number
@@ -209,6 +214,45 @@ Common patterns:
 
 ---
 
+## 7. Findings audits (optional visual report)
+
+A **findings audit** is a sibling artifact to a plan. A plan answers *what should we build?*;
+an audit answers *where does this problem already exist, what does the fix look like, and
+which instances are done?* It renders cross-file code findings — the same bug, anti-pattern,
+deprecated call, or risky idiom repeated across many files — as before/after diffs with a
+status badge per finding, headline stat cards, and a "why this is a bug" box. The hub serves
+it at `/audit/<id>` using the active theme.
+
+**Create an audit when** a scan/search has turned up the same shape in **3+ files**, when the
+reviewer asks for "an overview of where this pattern appears" or "an audit report", or when a
+set of before/after fixes is clearer visually than as a wall of text. **Do not** create one
+for a single-file finding (just show the diff inline) or for planning/proposal content (that
+is a plan, not an audit). This is **not a linter or scanner** — it renders findings some other
+step produced; it never runs analysis on its own, and never posts to any external code host.
+
+**Steps:**
+
+1. Gather findings (run the search). For each hit record: repo-relative file path, line, the
+   buggy code and its fix, a plain-English reason **specific to that instance**, and whether
+   it is `bug` (needs fixing), `fixed`, or `fine` (a false positive that matched but is
+   correct).
+2. Write one JSON file to `<auditsDir>/<id>.json` (default `.planning-hub/audits/<id>.json`).
+   See `docs/plan-format.md` for the schema. Set `planId` to attach it to a plan; omit it for
+   a standalone audit. The stat cards are derived from the findings, so never hand-maintain
+   counts. Quality bar: real file paths and line numbers, real commit SHAs, no placeholder
+   text, and a `why` box that names the exact failure mode.
+3. Point the reviewer at `http://<ip>:<port>/audit/<id>` (it is also linked from the hub index
+   and from any plan it names).
+4. **Update in place as fixes land** — same discipline as progress: change the finding's
+   `status` from `bug` to `fixed` and add its `commit`; the card moves to the Fixed section and
+   the counts recompute on the next request. Drop the "confirmed fine" findings once the
+   reviewer has reviewed them. Do this after each fix, not only at the end.
+
+To preview the bundled example: `python3 scripts/serve.py --audits examples/audits`
+(or `--state examples` if you keep audits under a state dir).
+
+---
+
 ## Configuration reference
 
 | Config key | Env var | Default | Description |
@@ -219,6 +263,7 @@ Common patterns:
 | `source` | `PLAN_HUB_SOURCE` | `auto` | `auto` / `generic` / `openspec` |
 | `themePath` | `PLAN_HUB_THEME` | `assets/themes/default.css` | CSS theme file path |
 | `stateDir` | `PLAN_HUB_STATE_DIR` | `.planning-hub` | Feedback + progress state directory |
+| `auditsDir` | `PLAN_HUB_AUDITS_DIR` | `<stateDir>/audits` | Findings-audit JSON directory |
 | `token` | `PLAN_HUB_TOKEN` | _(none)_ | Optional shared-secret for LAN access control |
 
 ---

@@ -34,6 +34,10 @@ PLAN_HUB_THEME=path/to/my-theme.css python3 scripts/serve.py
 | `--red-bg` | `#fee2e2` | Danger chip background |
 | `--blue` | `#2563eb` | Info text |
 | `--blue-bg` | `#dbeafe` | Info chip background |
+| `--diff-removed-bg` | `rgba(220,38,38,.10)` | Findings-audit "before" line background |
+| `--diff-removed-ink` | `#b42318` | Findings-audit "before" line text |
+| `--diff-added-bg` | `rgba(5,150,105,.12)` | Findings-audit "after" line background |
+| `--diff-added-ink` | `#067647` | Findings-audit "after" line text |
 | `--font-body` | system-ui stack | Body typeface |
 | `--font-display` | same as body | Heading typeface — override with a web font |
 | `--font-mono` | ui-monospace stack | Code / monospace typeface |

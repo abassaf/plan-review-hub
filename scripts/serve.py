@@ -31,6 +31,7 @@ import socket
 import argparse
 import sys
 import http.cookies
+import datetime
 
 # ─── configuration ────────────────────────────────────────────────────────────
 
@@ -47,6 +48,7 @@ def load_config():
         "source":    "auto",
         "themePath": "assets/themes/default.css",
         "stateDir":  ".planning-hub",
+        "auditsDir": None,
         "token":     None,
     }
     cfg_path = os.path.join(REPO, "plan-review-hub.config.json")
@@ -67,6 +69,7 @@ def load_config():
         "PLAN_HUB_SOURCE":    ("source",    str),
         "PLAN_HUB_THEME":     ("themePath", str),
         "PLAN_HUB_STATE_DIR": ("stateDir",  str),
+        "PLAN_HUB_AUDITS_DIR":("auditsDir", str),
         "PLAN_HUB_TOKEN":     ("token",     str),
     }
     for env_key, (cfg_key, cast) in env_map.items():
@@ -318,6 +321,71 @@ def get_progress():
     except Exception:
         return {}
 
+
+# ─── audit loading ─────────────────────────────────────────────────────────────
+# A "findings audit" renders cross-file code findings (the same bug/anti-pattern
+# repeated across many files) as before/after diffs with a per-finding status.
+# Audits are standalone artifacts; an audit may optionally name a planId to link
+# it to a plan. They are loaded from <auditsDir> (default <stateDir>/audits).
+
+def audits_dir():
+    if CFG.get("auditsDir"):
+        return _abs(CFG["auditsDir"])
+    return os.path.join(state_dir(), "audits")
+
+
+def _normalise_audit(a, fallback_id):
+    a.setdefault("id", fallback_id)
+    a.setdefault("title", a["id"].replace("-", " ").title())
+    a.setdefault("planId", None)
+    a.setdefault("pattern", {})
+    a.setdefault("why", "")
+    a.setdefault("summary", "")
+    a.setdefault("findings", [])
+    return a
+
+
+def load_audits():
+    """Return ordered list of audit dicts from the audits directory."""
+    d = audits_dir()
+    if not os.path.isdir(d):
+        return []
+    audits = []
+    for name in sorted(os.listdir(d)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(d, name)
+        try:
+            with open(path) as f:
+                a = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(a, dict):
+            continue
+        audits.append(_normalise_audit(a, name[:-len(".json")]))
+    return audits
+
+
+def get_audit(audit_id):
+    for a in load_audits():
+        if a["id"] == audit_id:
+            return a
+    return None
+
+
+def audit_counts(audit):
+    """Return (fixed, bug, fine, total) counts derived from findings."""
+    fixed = bug = fine = 0
+    for f in audit.get("findings", []):
+        st = f.get("status", "bug")
+        if st == "fixed":
+            fixed += 1
+        elif st == "fine":
+            fine += 1
+        else:
+            bug += 1
+    return fixed, bug, fine, len(audit.get("findings", []))
+
 # ─── LAN IP detection ──────────────────────────────────────────────────────────
 
 def local_ips():
@@ -522,6 +590,43 @@ textarea:focus{{outline:2px solid var(--accent);border-color:transparent}}
 .hub-progress{{display:flex;gap:16px;flex-wrap:wrap;margin:16px 0 6px}}
 .hub-progress .stat{{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:10px 14px;font-size:13px}}
 .hub-progress .stat b{{display:block;font-size:22px;font-weight:800;color:var(--accent)}}
+/* ── audit reports ── */
+.audit-stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:18px 0}}
+@media(max-width:700px){{.audit-stats{{grid-template-columns:1fr}}}}
+.audit-stats .stat{{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;text-align:center}}
+.audit-stats .stat b{{display:block;font-size:28px;font-weight:800;line-height:1.1}}
+.audit-stats .stat span{{font-size:12px;color:var(--ink-500);text-transform:uppercase;letter-spacing:.06em;font-weight:600}}
+.stat-fixed b{{color:var(--green)}}
+.stat-bug b{{color:var(--red)}}
+.stat-total b{{color:var(--blue)}}
+.why-box{{background:var(--blue-bg);border-left:3px solid var(--blue);border-radius:var(--radius);padding:13px 16px;font-size:13.5px;color:var(--ink-900);margin:14px 0}}
+.why-box code{{background:rgba(0,0,0,.06);color:inherit}}
+.audit-section-title{{font:700 14px/1.2 var(--font-display);margin:26px 0 8px;display:flex;align-items:center;gap:8px}}
+.audit-section-title .n{{color:var(--ink-500);font-weight:600;font-size:12.5px}}
+.audit-card{{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);margin:12px 0;overflow:hidden;box-shadow:var(--shadow-sm)}}
+.ac-head{{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;background:var(--surface-warm);border-bottom:1px solid var(--line)}}
+.ac-file{{font-family:var(--font-mono);font-size:12.5px;color:var(--ink-900)}}
+.ac-line{{font-size:12px;color:var(--ink-500)}}
+.ac-ref{{margin-left:auto;font-size:12px}}
+.badge{{display:inline-flex;align-items:center;border-radius:var(--radius-pill);padding:3px 10px;font:700 11px/1.4 var(--font-display)}}
+.badge-fixed{{background:var(--green-bg);color:var(--green)}}
+.badge-bug{{background:var(--red-bg);color:var(--red)}}
+.badge-fine{{background:var(--blue-bg);color:var(--blue)}}
+.diff-wrap{{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}}
+@media(max-width:700px){{.diff-wrap{{grid-template-columns:1fr}}}}
+.diff-pane{{background:var(--surface);padding:12px 14px;min-width:0}}
+.diff-pane h4{{font:700 10.5px/1 var(--font-display);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-500);margin:0 0 8px}}
+.diff-pane pre{{margin:0;overflow:auto;font-family:var(--font-mono);font-size:12px;line-height:1.55}}
+.line{{display:block;padding:0 7px;border-radius:4px;white-space:pre}}
+.line-removed{{background:var(--diff-removed-bg,rgba(220,38,38,.10));color:var(--diff-removed-ink,#b42318)}}
+.line-added{{background:var(--diff-added-bg,rgba(5,150,105,.12));color:var(--diff-added-ink,#067647)}}
+.line-neutral{{color:var(--ink-700)}}
+.audit-explain{{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--line);font-size:13px;color:var(--ink-700)}}
+.audit-explain .text{{flex:1;min-width:200px}}
+.verdict{{display:inline-flex;align-items:center;border-radius:var(--radius-pill);padding:4px 11px;font:700 11px/1.4 var(--font-display);white-space:nowrap}}
+.verdict-fixed{{background:var(--green-bg);color:var(--green)}}
+.verdict-todo{{background:var(--yellow-bg);color:var(--yellow)}}
+.verdict-fine{{background:var(--blue-bg);color:var(--blue)}}
 </style>
 </head>
 <body>
@@ -589,13 +694,35 @@ def render_index(plans, theme_css):
   <div class='aside'>{aside_html}</div>
 </a>""")
 
+    audits = load_audits()
     stats_html = f"""
 <div class='hub-progress'>
   <div class='stat'><b>{total}</b> Plans</div>
   <div class='stat'><b>{decided}</b> Reviewed</div>
   <div class='stat'><b>{done_count}</b> Implemented</div>
   <div class='stat'><b>{total - done_count}</b> Remaining</div>
+  {f"<div class='stat'><b>{len(audits)}</b> Audits</div>" if audits else ""}
 </div>"""
+
+    audits_section = ""
+    if audits:
+        audit_rows = []
+        for a in audits:
+            fixed, bug, fine, atotal = audit_counts(a)
+            sub = f"{fixed} fixed · {bug} open · {atotal} scanned"
+            audit_rows.append(f"""
+<a class='index-row' href='/audit/{html.escape(a['id'])}'>
+  <div class='num'>&#9670;</div>
+  <div class='body'>
+    <h3>{html.escape(a['title'])}</h3>
+    <p>{html.escape((a.get('summary') or '').strip())}</p>
+  </div>
+  <div class='aside'><div style='font-size:11px;color:var(--ink-500)'>{html.escape(sub)}</div></div>
+</a>""")
+        audits_section = (
+            "<div class='eyebrow' style='margin:26px 0 4px'>Findings audits</div>"
+            + "".join(audit_rows)
+        )
 
     body = f"""
 <div class='wrap'>
@@ -606,6 +733,7 @@ def render_index(plans, theme_css):
   </div>
   {stats_html}
   {''.join(rows)}
+  {audits_section}
   <div class='card' style='margin-top:20px'>
     <h2>How this works</h2>
     <p style='font-size:13.5px;color:var(--ink-700)'>
@@ -708,6 +836,22 @@ def render_plan(plan, plans, theme_css):
 
     progress_card = render_progress_card(pid, progress)
 
+    # audits linked to this plan
+    linked_audits = [a for a in load_audits() if a.get("planId") == pid]
+    audits_card = ""
+    if linked_audits:
+        links = []
+        for a in linked_audits:
+            fixed, bug, fine, atotal = audit_counts(a)
+            links.append(
+                f"<li><a href='/audit/{html.escape(a['id'])}'>{html.escape(a['title'])}</a> "
+                f"<span style='color:var(--ink-500);font-size:12px'>— {fixed} fixed · {bug} open · {atotal} scanned</span></li>"
+            )
+        audits_card = (
+            "<div class='card'><h2>Findings audits</h2>"
+            f"<ul class='md-ul'>{''.join(links)}</ul></div>"
+        )
+
     saved_notes = html.escape(fb.get("notes", ""))
     saved_priority = html.escape(str(fb.get("priority", "")))
     saved_assignee = html.escape(fb.get("assignee", ""))
@@ -724,6 +868,7 @@ def render_plan(plan, plans, theme_css):
     <div class='main-col'>
       {headline_html}
       {progress_card}
+      {audits_card}
       {''.join(doc_sections)}
       <div class='card fb'>
         <h2>Your feedback</h2>
@@ -809,6 +954,143 @@ def render_plan(plan, plans, theme_css):
     crumbs = f"<a href='/'>Hub</a> &nbsp;/&nbsp; Plan {html.escape(plan['num'])}"
     return page_shell(f"{plan['title']} — Plan Review Hub", crumbs, body, theme_css)
 
+
+AUDIT_BADGE = {
+    "fixed": ("badge-fixed", "Fixed"),
+    "bug":   ("badge-bug",   "Bug"),
+    "fine":  ("badge-fine",  "Fine"),
+}
+AUDIT_SECTIONS = [
+    ("fixed", "&#9989; Fixed"),
+    ("bug",   "&#9888;&#65039; Needs fixing"),
+    ("fine",  "&#128064; Reviewed &mdash; confirmed fine"),
+]
+
+
+def _render_diff_lines(lines, default_kind):
+    """Render code lines for one diff pane. A line is a string (uses default_kind)
+    or a dict {"text":..., "kind": "removed"|"added"|"neutral"}."""
+    out = []
+    for ln in lines or []:
+        if isinstance(ln, dict):
+            text = ln.get("text", "")
+            kind = ln.get("kind", default_kind)
+        else:
+            text, kind = ln, default_kind
+        if kind not in ("removed", "added", "neutral"):
+            kind = default_kind
+        out.append(f"<span class='line line-{kind}'>{html.escape(text)}</span>")
+    return "".join(out) or "<span class='line line-neutral'></span>"
+
+
+def _render_finding(f):
+    status = f.get("status", "bug")
+    badge_cls, badge_label = AUDIT_BADGE.get(status, ("badge-bug", status))
+    file_html = html.escape(f.get("file", "(unknown file)"))
+    line_html = f"<span class='ac-line'>line {html.escape(str(f.get('line')))}</span>" if f.get("line") is not None else ""
+    ref = f.get("ref")
+    ref_html = f"<span class='ac-ref'><a href='{html.escape(ref)}' target='_blank' rel='noopener'>reference &#8599;</a></span>" if ref else ""
+
+    before_html = _render_diff_lines(f.get("before"), "removed")
+    after_html = _render_diff_lines(f.get("after"), "added")
+
+    # verdict pill: explicit text wins, else derived from status (+ commit)
+    if status == "fixed":
+        commit = f.get("commit")
+        vtext = f.get("verdict") or (f"Fixed in {commit}" if commit else "Fixed")
+        vcls = "verdict-fixed"
+    elif status == "fine":
+        vtext = f.get("verdict") or "No change needed"
+        vcls = "verdict-fine"
+    else:
+        vtext = f.get("verdict") or "To fix"
+        vcls = "verdict-todo"
+
+    explanation = html.escape(f.get("explanation", ""))
+    return f"""
+<div class='audit-card'>
+  <div class='ac-head'>
+    <span class='badge {badge_cls}'>{badge_label}</span>
+    <span class='ac-file'>{file_html}</span>
+    {line_html}
+    {ref_html}
+  </div>
+  <div class='diff-wrap'>
+    <div class='diff-pane'><h4>Before</h4><pre>{before_html}</pre></div>
+    <div class='diff-pane'><h4>After</h4><pre>{after_html}</pre></div>
+  </div>
+  <div class='audit-explain'>
+    <span class='text'>{explanation}</span>
+    <span class='verdict {vcls}'>{html.escape(vtext)}</span>
+  </div>
+</div>"""
+
+
+def render_audit(audit, theme_css):
+    aid = audit["id"]
+    fixed, bug, fine, total = audit_counts(audit)
+
+    pattern = audit.get("pattern") or {}
+    pat_html = ""
+    if pattern.get("buggy") or pattern.get("correct"):
+        parts = []
+        if pattern.get("buggy"):
+            parts.append(f"buggy <code>{html.escape(pattern['buggy'])}</code>")
+        if pattern.get("correct"):
+            parts.append(f"correct <code>{html.escape(pattern['correct'])}</code>")
+        pat_html = " &rarr; ".join(parts)
+
+    why_html = f"<div class='why-box'>{audit['why']}</div>" if audit.get("why") else ""
+
+    stats_html = f"""
+<div class='audit-stats'>
+  <div class='stat stat-fixed'><b>{fixed}</b><span>Fixed</span></div>
+  <div class='stat stat-bug'><b>{bug}</b><span>Needs fixing</span></div>
+  <div class='stat stat-total'><b>{total}</b><span>Total scanned</span></div>
+</div>"""
+
+    # group findings into sections by status, preserving file order within each
+    by_status = {"fixed": [], "bug": [], "fine": []}
+    for f in audit.get("findings", []):
+        by_status.get(f.get("status", "bug"), by_status["bug"]).append(f)
+
+    sections_html = []
+    for status, label in AUDIT_SECTIONS:
+        items = by_status.get(status, [])
+        if not items:
+            continue
+        cards = "".join(_render_finding(f) for f in items)
+        sections_html.append(
+            f"<div class='audit-section-title'>{label} <span class='n'>{len(items)}</span></div>{cards}"
+        )
+
+    today = datetime.date.today().isoformat()
+    summary = html.escape(audit.get("summary", "")) or f"{fixed} fixed · {bug} open · {total} scanned"
+
+    plan_link = ""
+    if audit.get("planId"):
+        plan_link = f"<div class='kv'>Plan<b><a href='/plan/{html.escape(audit['planId'])}'>{html.escape(audit['planId'])}</a></b></div>"
+
+    body = f"""
+<div class='wrap'>
+  <div class='hero'>
+    <div class='eyebrow'>Findings audit</div>
+    <h1 class='page-title'>{html.escape(audit['title'])}</h1>
+    {f"<p class='lead'>{pat_html}</p>" if pat_html else ""}
+    <div class='meta'>
+      <div class='kv'>Audit ID<b><code>{html.escape(aid)}</code></b></div>
+      {plan_link}
+    </div>
+  </div>
+  {stats_html}
+  {why_html}
+  {''.join(sections_html) or "<div class='empty-state'><h2>No findings</h2><p>This audit has no findings yet.</p></div>"}
+  <div class='footer'>Generated {today} · audit <code>{html.escape(aid)}</code> · {summary}</div>
+</div>"""
+
+    crumbs = f"<a href='/'>Hub</a> &nbsp;/&nbsp; Audit"
+    return page_shell(f"{audit['title']} — Findings audit", crumbs, body, theme_css)
+
 # ─── token / cookie auth ───────────────────────────────────────────────────────
 
 COOKIE_NAME = "prh_token"
@@ -890,6 +1172,17 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             data = {p["id"]: get_feedback(p["id"]) for p in plans}
             return self._send(200, json.dumps(data, indent=2), "application/json", extra_headers=extra_headers)
 
+        if path == "/audits":
+            data = {a["id"]: a for a in load_audits()}
+            return self._send(200, json.dumps(data, indent=2), "application/json", extra_headers=extra_headers)
+
+        if path.startswith("/audit/"):
+            aid = path[len("/audit/"):].strip("/")
+            audit = get_audit(aid)
+            if not audit:
+                return self._404(f"Unknown audit '{aid}'")
+            return self._send(200, render_audit(audit, theme_css), extra_headers=extra_headers)
+
         if path.startswith("/plan/"):
             pid = path[len("/plan/"):].strip("/")
             plan = plan_by_id.get(pid)
@@ -968,6 +1261,7 @@ def parse_args():
     p.add_argument("--source", choices=["auto", "generic", "openspec"], default=None)
     p.add_argument("--theme",  dest="themePath", default=None)
     p.add_argument("--state",  dest="stateDir", default=None)
+    p.add_argument("--audits", dest="auditsDir", default=None)
     p.add_argument("--token",  default=None)
     return p.parse_args()
 
@@ -977,7 +1271,7 @@ def main():
     # CLI flags override everything
     for attr, key in [("port","port"),("host","host"),("plansDir","plansDir"),
                       ("source","source"),("themePath","themePath"),
-                      ("stateDir","stateDir"),("token","token")]:
+                      ("stateDir","stateDir"),("auditsDir","auditsDir"),("token","token")]:
         v = getattr(args, attr)
         if v is not None:
             CFG[key] = v
@@ -992,6 +1286,7 @@ def main():
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer((host, port), HubHandler) as httpd:
         plans = load_plans()
+        audits = load_audits()
         ips = local_ips()
         print(f"\nplan-review-hub running on {host}:{port}")
         print(f"  source: {CFG['source']}  plans: {_abs(CFG['plansDir'])}  state: {state_dir()}")
@@ -1004,6 +1299,8 @@ def main():
             print(f"  HUB    http://{ip}:{port}/")
             for p in plans:
                 print(f"    {p['num']}  http://{ip}:{port}/plan/{urllib.parse.quote(p['id'])}")
+            for a in audits:
+                print(f"    audit  http://{ip}:{port}/audit/{urllib.parse.quote(a['id'])}")
         if not plans:
             print(f"  (no plans found — see examples/plans/ for sample plans)")
         print()

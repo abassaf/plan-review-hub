@@ -1,0 +1,72 @@
+{
+  "id": "operator-precedence-sweep",
+  "title": "Operator-precedence guard around conditional rendering",
+  "planId": null,
+  "pattern": {
+    "buggy": "loading || (ready && view())",
+    "correct": "(loading || ready) && view()"
+  },
+  "why": "When <code>loading</code> is truthy, <code>||</code> short-circuits and the whole expression resolves to that truthy value instead of the guarded <code>view()</code>. The intended block is then only reachable through the second branch, so it silently never renders during the loading state. Unioning the booleans first with <code>(loading || ready)</code> and gating once with <code>&amp;&amp;</code> restores the intended condition.",
+  "summary": "Same precedence slip found in 4 places: 2 fixed, 1 open, 1 confirmed fine.",
+  "findings": [
+    {
+      "file": "src/views/list-view.ext",
+      "line": 84,
+      "status": "fixed",
+      "before": [
+        "return (",
+        { "text": "  loading || (ready && (", "kind": "removed" },
+        "    panel(items)",
+        { "text": "  ))", "kind": "removed" },
+        ")"
+      ],
+      "after": [
+        "return (",
+        { "text": "  (loading || ready) && (", "kind": "added" },
+        "    panel(items)",
+        { "text": "  )", "kind": "added" },
+        ")"
+      ],
+      "explanation": "During the initial fetch, loading is true, so the old expression returned true and the panel never rendered. Now both flags are unioned before the single guard.",
+      "commit": "a1b2c3d"
+    },
+    {
+      "file": "src/views/detail-view.ext",
+      "line": 142,
+      "status": "fixed",
+      "before": [
+        { "text": "pending || (hasData && header())", "kind": "removed" }
+      ],
+      "after": [
+        { "text": "(pending || hasData) && header()", "kind": "added" }
+      ],
+      "explanation": "Identical shape with pending/hasData. The header was missing for the entire pending window until the union fix.",
+      "commit": "e4f5a6b"
+    },
+    {
+      "file": "src/widgets/summary-card.ext",
+      "line": 57,
+      "status": "bug",
+      "before": [
+        { "text": "busy || (loaded && totals())", "kind": "removed" }
+      ],
+      "after": [
+        { "text": "(busy || loaded) && totals()", "kind": "added" }
+      ],
+      "explanation": "Same precedence slip on busy/loaded. Fix proposed but not yet applied — the totals block does not render while busy is true.",
+      "verdict": "To fix"
+    },
+    {
+      "file": "src/widgets/filter-bar.ext",
+      "line": 31,
+      "status": "fine",
+      "before": [
+        { "text": "enabled || fallback()", "kind": "neutral" }
+      ],
+      "after": [
+        { "text": "enabled || fallback()", "kind": "neutral" }
+      ],
+      "explanation": "Matched the grep but is not the bug: this is a deliberate either/or fallback, not a boolean guard around a conditional render. No change needed."
+    }
+  ]
+}

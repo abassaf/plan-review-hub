@@ -129,6 +129,73 @@ If `progress.json` does not exist, every plan is treated as "not started".
 
 ---
 
+## audit/<id>.json (input — one per findings audit)
+
+Location: `<auditsDir>/<id>.json` (default `<stateDir>/audits/<id>.json`)
+
+A **findings audit** is a sibling artifact to a plan. Where a plan answers "what should
+we build?", an audit answers "where does this problem already exist, what does the fix look
+like, and which instances are done?". The hub renders it at `/audit/<id>` as a before/after
+report with a status badge per finding and headline counts.
+
+```jsonc
+{
+  // Required
+  "id":    "operator-precedence-sweep",   // url-safe slug; used in the /audit/<id> URL
+  "title": "Operator-precedence guard sweep",
+
+  // Optional — link this audit to a plan (shown on that plan's page, and vice versa)
+  "planId": "some-plan",                  // or null / omitted for a standalone audit
+
+  // Optional — the pattern, shown as inline code in the header
+  "pattern": {
+    "buggy":   "loading || (ready && view())",
+    "correct": "(loading || ready) && view()"
+  },
+
+  // Optional — the "why this is a bug" info box. May contain inline HTML (e.g. <code>).
+  "why": "When loading is truthy, || short-circuits and the guarded block never renders…",
+
+  // Optional — footer summary line (falls back to derived counts)
+  "summary": "4 instances: 2 fixed, 1 open, 1 confirmed fine.",
+
+  // The findings themselves
+  "findings": [
+    {
+      "file":   "path/to/file",           // repo-relative path (shown in monospace)
+      "line":   84,                        // optional line reference
+
+      // Status drives the badge, the section it lands in, and the verdict pill:
+      //   "bug"   → ⚠️ Needs fixing
+      //   "fixed" → ✅ Fixed
+      //   "fine"  → 👀 Reviewed — confirmed fine (false positive)
+      "status": "fixed",
+
+      // Code for the two diff panes. Each entry is either a plain string or an object
+      // {"text": "...", "kind": "removed"|"added"|"neutral"}. Plain strings default to
+      // "removed" in the Before pane and "added" in the After pane.
+      "before": ["loading || (ready && (", "  panel(items)", "))"],
+      "after":  ["(loading || ready) && (", "  panel(items)", ")"],
+
+      "explanation": "Plain-English reason THIS instance is wrong, in its own terms.",
+
+      // Optional. For fixed findings, commit fills the verdict pill ("Fixed in <sha>").
+      // An explicit verdict string overrides the derived text.
+      "commit":  "a1b2c3d",
+      "verdict": null,
+      "ref":     "https://…"               // optional link rendered in the card header
+    }
+  ]
+}
+```
+
+The three stat cards (Fixed / Needs fixing / Total scanned) are **derived** from the
+`findings` array on every request — they are never stored, so they cannot drift. To update
+an audit as fixes land, edit the relevant finding's `status` (`bug` → `fixed`) and add its
+`commit`; the card moves sections and the counts recompute automatically.
+
+---
+
 ## Directory layout summary
 
 ```
@@ -147,6 +214,8 @@ If `progress.json` does not exist, every plan is treated as "not started".
 │   ├── feedback/
 │   │   ├── api-versioning.json
 │   │   └── dark-mode.json
+│   ├── audits/                     # findings audits (--audits); default <state>/audits
+│   │   └── operator-precedence-sweep.json
 │   └── progress.json
 │
 └── assets/themes/

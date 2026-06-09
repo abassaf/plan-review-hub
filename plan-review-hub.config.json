@@ -7,6 +7,7 @@
     "PLAN_HUB_SOURCE":    "Plan source: auto | generic | openspec (default: auto)",
     "PLAN_HUB_THEME":     "Path to a CSS theme file (default: assets/themes/default.css)",
     "PLAN_HUB_STATE_DIR": "Directory for feedback/progress state (default: .planning-hub)",
+    "PLAN_HUB_AUDITS_DIR":"Directory for findings-audit JSON files (default: <stateDir>/audits)",
     "PLAN_HUB_TOKEN":     "Optional shared-secret token; if set, requests must supply ?token=<value>"
   },
 
@@ -16,5 +17,6 @@
   "source":    "auto",
   "themePath": "assets/themes/default.css",
   "stateDir":  ".planning-hub",
+  "auditsDir": null,
   "token":     null
 }

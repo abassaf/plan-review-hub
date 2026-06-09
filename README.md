@@ -81,6 +81,28 @@ python3 scripts/serve.py --plans examples/plans --port 8770
 # open http://localhost:8770/
 ```
 
+The `examples/audits/` directory contains a sample findings audit that renders at
+`/audit/<id>`:
+
+```bash
+python3 scripts/serve.py --audits examples/audits --port 8770
+# open http://localhost:8770/audit/operator-precedence-sweep
+```
+
+## Findings audits
+
+Alongside plans, the hub renders **findings audits**: cross-file code findings (the same
+bug or anti-pattern repeated across many files) shown as before/after diffs with a status
+badge per finding (`Bug` / `Fixed` / `Fine`), headline stat cards, and a "why this is a
+bug" box. A plan answers *what should we build?*; an audit answers *where does this problem
+already exist and which instances are fixed?*
+
+Each audit is a single JSON file under `<auditsDir>/<id>.json` (default
+`.planning-hub/audits/`). Set `planId` to attach it to a plan, or omit it for a standalone
+audit. The stat cards are derived from the findings, so they never drift. As fixes land,
+flip a finding's `status` from `bug` to `fixed` and add its `commit` — the card moves to the
+Fixed section and the counts recompute. See `docs/plan-format.md` for the schema.
+
 ## Plan format
 
 Each plan is a folder under `plans/<id>/` (or a custom `--plans` path):
@@ -113,6 +135,7 @@ Set `--source openspec` to force it. See `examples/openspec-note.md` for details
   "source":    "auto",
   "themePath": "assets/themes/default.css",
   "stateDir":  ".planning-hub",
+  "auditsDir": null,
   "token":     null
 }
 ```
@@ -127,6 +150,7 @@ Set `--source openspec` to force it. See `examples/openspec-note.md` for details
 | `PLAN_HUB_SOURCE` | `auto` / `generic` / `openspec` |
 | `PLAN_HUB_THEME` | Path to CSS theme file |
 | `PLAN_HUB_STATE_DIR` | Feedback + progress state dir (default: `.planning-hub`) |
+| `PLAN_HUB_AUDITS_DIR` | Findings-audit JSON dir (default: `<state>/audits`) |
 | `PLAN_HUB_TOKEN` | Optional shared-secret access token |
 
 **CLI flags** (both servers support the same flags):
@@ -138,6 +162,7 @@ Set `--source openspec` to force it. See `examples/openspec-note.md` for details
 --source  auto | generic | openspec
 --theme   CSS theme file path
 --state   State directory path
+--audits  Findings-audit JSON directory
 --token   Shared-secret token
 ```
 
@@ -170,9 +195,11 @@ Update `progress.json` manually or have the implementing agent update it as plan
 
 | Route | Description |
 |-------|-------------|
-| `/` | Hub index — all plans with status and progress chips |
+| `/` | Hub index — all plans with status and progress chips (plus any findings audits) |
 | `/plan/<id>` | Single plan — docs, progress card, feedback form |
+| `/audit/<id>` | Findings audit — before/after report with a status badge per finding |
 | `/feedback` | JSON dump of all collected feedback |
+| `/audits` | JSON dump of all findings audits |
 | `/assets/...` | Theme CSS and static assets |
 | `/healthz` | Health check — returns `{"status":"ok"}` |
 

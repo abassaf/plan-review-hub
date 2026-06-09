@@ -120,11 +120,35 @@ def check_plan_json(path: Path) -> None:
             raise CheckError(f"{rel(path)} decision {decision.get('id')} needs options")
 
 
+def check_audit_json(path: Path) -> None:
+    data = load_json(path)
+    if not isinstance(data, dict):
+        raise CheckError(f"{rel(path)} must contain a JSON object")
+    audit_id = data.get("id")
+    if audit_id is not None and not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(audit_id)):
+        raise CheckError(f"{rel(path)} id must be URL-safe lowercase kebab-case")
+    findings = data.get("findings", [])
+    if not isinstance(findings, list):
+        raise CheckError(f"{rel(path)} findings must be a list")
+    for finding in findings:
+        if not isinstance(finding, dict):
+            raise CheckError(f"{rel(path)} has a non-object finding entry")
+        status = finding.get("status", "bug")
+        if status not in ("bug", "fixed", "fine"):
+            raise CheckError(f"{rel(path)} finding status must be bug|fixed|fine, got {status!r}")
+        for key in ("before", "after"):
+            if key in finding and not isinstance(finding[key], list):
+                raise CheckError(f"{rel(path)} finding {key} must be a list")
+
+
 def check_json_files() -> None:
     load_json(ROOT / "plan-review-hub.config.json")
     for pattern in ("examples/plans/*/plan.json", "plans/*/plan.json"):
         for path in sorted(ROOT.glob(pattern)):
             check_plan_json(path)
+    for pattern in ("examples/audits/*.json", ".planning-hub/audits/*.json"):
+        for path in sorted(ROOT.glob(pattern)):
+            check_audit_json(path)
     progress_path = ROOT / ".planning-hub" / "progress.json"
     if progress_path.exists():
         load_json(progress_path)
@@ -172,6 +196,8 @@ def smoke_server() -> None:
         str(port),
         "--plans",
         "examples/plans",
+        "--audits",
+        "examples/audits",
         "--state",
         ".planning-hub/validate-smoke",
     ]
@@ -199,10 +225,13 @@ def smoke_server() -> None:
 
         index = fetch_text(f"{base}/")
         plan = fetch_text(f"{base}/plan/api-versioning")
+        audit = fetch_text(f"{base}/audit/operator-precedence-sweep")
         if "Plan Review Hub" not in index:
             raise CheckError("Smoke index did not render Plan Review Hub")
         if "API versioning strategy" not in plan:
             raise CheckError("Smoke plan page did not render expected example plan")
+        if "Findings audit" not in audit or "Needs fixing" not in audit:
+            raise CheckError("Smoke audit page did not render the example findings audit")
     finally:
         proc.terminate()
         try:
