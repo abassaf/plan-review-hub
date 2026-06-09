@@ -202,79 +202,145 @@ def _load_openspec(changes_dir):
 def md_to_html(text):
     """
     Minimal Markdown → HTML.
-    Supports: headings (# – ####), bullet lists (- / *), fenced code blocks,
-    bold (**text**), inline code (`code`), paragraphs.
+    Block-level: ATX headings (#–####), bullet lists (- / *) with wrapped
+    continuation lines, blockquotes (>), fenced code blocks, and paragraphs.
+    Soft-wrapped source lines within a block are reflowed into one element, so
+    hard-wrapped Markdown renders as continuous prose instead of one <p> per
+    source line.
+    Inline: **bold**, *italic*, `code`.
     Checkboxes: [ ] → ☐  [x]/[X] → ☑  (rendered AFTER html.escape so the
     span is never escaped).
     """
-    out = []
-    in_ul = False
-    in_code = False
-
     def inline(s):
         s = html.escape(s)
         s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
         s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+        # italics: a single * pair, not part of a ** run, wrapping non-space text
+        s = re.sub(r"(?<!\*)\*(?!\*)(?=\S)([^*\n]+?)(?<=\S)\*(?!\*)", r"<em>\1</em>", s)
         return s
 
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        # fenced code block toggle
-        if re.match(r"^```", line):
-            in_code = not in_code
-            if in_code:
-                if in_ul:
-                    out.append("</ul>")
-                    in_ul = False
-                out.append("<pre class='code-block'><code>")
-            else:
-                out.append("</code></pre>")
+    def checkbox(rendered):
+        # html.escape has already run; inject the span safely
+        return re.sub(
+            r"^\[([xX ])\]\s*",
+            lambda mm: (
+                "<span class='chk chk-done'>&#9745;</span> "
+                if mm.group(1) in "xX"
+                else "<span class='chk'>&#9744;</span> "
+            ),
+            rendered,
+        )
+
+    lines = text.splitlines()
+    n = len(lines)
+    out = []
+    i = 0
+
+    is_heading = lambda s: re.match(r"^#{1,4}\s+", s)
+    is_bullet = lambda s: re.match(r"^\s*[-*]\s+", s)
+    is_olist = lambda s: re.match(r"^\s*\d+\.\s+", s)
+    is_quote = lambda s: s.lstrip().startswith(">")
+    is_fence = lambda s: s.lstrip().startswith("```")
+
+    def block_starts(raw_line):
+        cs = raw_line.strip()
+        return (is_bullet(raw_line) or is_olist(raw_line) or is_heading(cs)
+                or is_quote(raw_line) or is_fence(raw_line))
+
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+
+        # blank line → block separator
+        if not stripped:
+            i += 1
             continue
-        if in_code:
-            out.append(html.escape(raw))
+
+        # fenced code block (verbatim until the closing fence)
+        if is_fence(line):
+            i += 1
+            code = []
+            while i < n and not is_fence(lines[i]):
+                code.append(html.escape(lines[i]))
+                i += 1
+            i += 1  # consume the closing fence if present
+            out.append(
+                "<pre class='code-block'><code>" + "\n".join(code) + "</code></pre>"
+            )
             continue
-        # headings
-        m = re.match(r"^(#{1,4})\s+(.+)$", line)
+
+        # heading (single line)
+        m = re.match(r"^(#{1,4})\s+(.+)$", stripped)
         if m:
-            if in_ul:
-                out.append("</ul>")
-                in_ul = False
             lvl = min(len(m.group(1)) + 2, 6)
             out.append(f"<h{lvl} class='md-h'>{inline(m.group(2))}</h{lvl}>")
+            i += 1
             continue
-        # bullet list item (- or *)
-        m = re.match(r"^\s*[-*]\s+(.*)$", line)
-        if m:
-            if not in_ul:
-                out.append("<ul class='md-ul'>")
-                in_ul = True
-            rendered = inline(m.group(1))
-            # checkboxes: html.escape has already run; inject span safely
-            rendered = re.sub(
-                r"^\[([xX ])\]\s*",
-                lambda mm: (
-                    "<span class='chk chk-done'>&#9745;</span> "
-                    if mm.group(1) in "xX"
-                    else "<span class='chk'>&#9744;</span> "
-                ),
-                rendered,
-            )
-            out.append(f"<li>{rendered}</li>")
-            continue
-        # blank line
-        if not line.strip():
-            if in_ul:
-                out.append("</ul>")
-                in_ul = False
-            continue
-        # paragraph
-        if in_ul:
-            out.append("</ul>")
-            in_ul = False
-        out.append(f"<p>{inline(line)}</p>")
 
-    if in_ul:
-        out.append("</ul>")
+        # blockquote: gather consecutive '>' lines, reflow into paragraphs
+        if is_quote(line):
+            q_lines = []
+            while i < n and is_quote(lines[i]):
+                q_lines.append(re.sub(r"^\s*>\s?", "", lines[i].rstrip()))
+                i += 1
+            paras, buf = [], []
+            for q in q_lines:
+                if q.strip():
+                    buf.append(q.strip())
+                elif buf:
+                    paras.append(" ".join(buf))
+                    buf = []
+            if buf:
+                paras.append(" ".join(buf))
+            inner = "".join(f"<p>{inline(p)}</p>" for p in paras)
+            out.append(f"<blockquote class='md-quote'>{inner}</blockquote>")
+            continue
+
+        # bullet list: each item may wrap across indented continuation lines
+        if is_bullet(line):
+            out.append("<ul class='md-ul'>")
+            while i < n:
+                cur = lines[i]
+                if not cur.strip():
+                    break
+                mm = re.match(r"^\s*[-*]\s+(.*)$", cur)
+                if not mm:
+                    break
+                parts = [mm.group(1).strip()]
+                i += 1
+                while i < n and lines[i].strip() and not block_starts(lines[i]):
+                    parts.append(lines[i].strip())
+                    i += 1
+                out.append(f"<li>{checkbox(inline(' '.join(parts)))}</li>")
+            out.append("</ul>")
+            continue
+
+        # ordered list: "1. ", "2. " … each item may wrap across lines
+        if is_olist(line):
+            out.append("<ol class='md-ol'>")
+            while i < n:
+                cur = lines[i]
+                if not cur.strip():
+                    break
+                mm = re.match(r"^\s*\d+\.\s+(.*)$", cur)
+                if not mm:
+                    break
+                parts = [mm.group(1).strip()]
+                i += 1
+                while i < n and lines[i].strip() and not block_starts(lines[i]):
+                    parts.append(lines[i].strip())
+                    i += 1
+                out.append(f"<li>{inline(' '.join(parts))}</li>")
+            out.append("</ol>")
+            continue
+
+        # paragraph: reflow wrapped lines until a blank line or a new block
+        parts = []
+        while i < n and lines[i].strip() and not block_starts(lines[i]):
+            parts.append(lines[i].strip())
+            i += 1
+        out.append(f"<p>{inline(' '.join(parts))}</p>")
+
     return "\n".join(out)
 
 
@@ -537,8 +603,13 @@ h1.page-title{{font:700 28px/1.15 var(--font-display);letter-spacing:-.01em;marg
 .md-h{{font-family:var(--font-display);margin:16px 0 5px}}
 h3.md-h{{font-size:15px;font-weight:700}}
 h4.md-h{{font-size:13.5px;font-weight:700;color:var(--ink-700)}}
-.md-ul{{margin:5px 0 10px;padding-left:18px}}
-.md-ul li{{margin:3px 0;font-size:13.5px}}
+.md-ul,.md-ol{{margin:5px 0 10px;padding-left:20px}}
+.md-ul li,.md-ol li{{margin:3px 0;font-size:13.5px}}
+.md-ol li{{padding-left:3px}}
+.spec-section p{{margin:9px 0;font-size:13.5px;line-height:1.62;color:var(--ink-700)}}
+.spec-section em,.md-quote em{{font-style:italic}}
+.md-quote{{margin:13px 0;padding:8px 16px;border-left:3px solid var(--accent);background:var(--surface-warm);border-radius:var(--radius-sm);color:var(--ink-700)}}
+.md-quote p{{margin:7px 0;font-size:13.5px;line-height:1.6}}
 .chk{{color:var(--ink-500)}}
 .chk-done{{color:var(--green)}}
 code{{font-family:var(--font-mono);font-size:.84em;background:var(--accent-soft);color:var(--accent);padding:1px 5px;border-radius:5px}}
