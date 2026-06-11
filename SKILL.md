@@ -54,6 +54,33 @@ node scripts/serve.mjs --plans plans --port 8770
 The server prints the hub URL and one URL per plan. Share them with the reviewer.
 The hub auto-reloads plan data on every request — edit plans without restarting.
 
+**GitHub Copilot CLI — special requirements:**
+
+Each `bash` tool call runs in a fresh process; background processes started with `&` are
+killed when that shell exits. You **must** use `mode="async"` with `detach=true`, and
+**always pass absolute paths** to `--plans` and `--state` (relative paths resolve against
+an unpredictable working directory):
+
+```python
+bash(
+    command='python3 /abs/path/to/skills/plan-review-hub/scripts/serve.py '
+            '--plans /abs/path/to/project/plans '
+            '--state /abs/path/to/project/.planning-hub '
+            '--port 8770',
+    mode='async',
+    detach=True,
+    shellId='plan-hub',
+    initial_wait=5,
+)
+```
+
+Verify in a follow-up call: `curl -s http://localhost:8770/ | grep -o "[0-9]* plans"`.
+To stop: `lsof -i :8770 | grep LISTEN | awk '{print $2}'` then `kill <PID>`
+(`pkill` is not available in the Copilot CLI environment).
+
+See `references/provider-notes.md` for the full Copilot CLI section, including plan
+ordering, LAN IP retrieval, and the GFM table patch for `serve.py`.
+
 **Optional: token-protected access**
 
 ```bash

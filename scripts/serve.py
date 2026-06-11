@@ -241,11 +241,16 @@ def md_to_html(text):
     is_olist = lambda s: re.match(r"^\s*\d+\.\s+", s)
     is_quote = lambda s: s.lstrip().startswith(">")
     is_fence = lambda s: s.lstrip().startswith("```")
+    is_table_row = lambda s: s.strip().startswith("|") and s.strip().endswith("|")
+    is_table_sep = lambda s: bool(re.match(r"^\s*\|[\s\|\-:]+\|\s*$", s))
+    is_hr = lambda s: bool(re.match(r"^\s*(-{3,}|\*{3,}|_{3,})\s*$", s))
+    # GFM table support — see references/provider-notes.md (GitHub Copilot CLI section)
 
     def block_starts(raw_line):
         cs = raw_line.strip()
         return (is_bullet(raw_line) or is_olist(raw_line) or is_heading(cs)
-                or is_quote(raw_line) or is_fence(raw_line))
+                or is_quote(raw_line) or is_fence(raw_line) or is_table_row(raw_line)
+                or is_hr(raw_line))
 
     while i < n:
         line = lines[i]
@@ -332,6 +337,30 @@ def md_to_html(text):
                     i += 1
                 out.append(f"<li>{inline(' '.join(parts))}</li>")
             out.append("</ol>")
+            continue
+
+        # horizontal rule: ---, ***, ___
+        if is_hr(line):
+            out.append("<hr class='md-hr'>")
+            i += 1
+            continue
+
+        # GFM table: header row | separator row | data rows
+        if is_table_row(line) and i + 1 < n and is_table_sep(lines[i + 1]):
+            def split_row(r):
+                return [c.strip() for c in r.strip().strip("|").split("|")]
+            headers = split_row(lines[i])
+            i += 2  # skip header + separator
+            cells = []
+            while i < n and is_table_row(lines[i]):
+                cells.append(split_row(lines[i]))
+                i += 1
+            thead = "".join(f"<th>{inline(h)}</th>" for h in headers)
+            tbody = "".join(
+                "<tr>" + "".join(f"<td>{inline(c)}</td>" for c in row) + "</tr>"
+                for row in cells
+            )
+            out.append(f"<table class='md-table'><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>")
             continue
 
         # paragraph: reflow wrapped lines until a blank line or a new block
@@ -610,6 +639,11 @@ h4.md-h{{font-size:13.5px;font-weight:700;color:var(--ink-700)}}
 .spec-section em,.md-quote em{{font-style:italic}}
 .md-quote{{margin:13px 0;padding:8px 16px;border-left:3px solid var(--accent);background:var(--surface-warm);border-radius:var(--radius-sm);color:var(--ink-700)}}
 .md-quote p{{margin:7px 0;font-size:13.5px;line-height:1.6}}
+.md-table{{border-collapse:collapse;width:100%;margin:12px 0;font-size:13px}}
+.md-table th,.md-table td{{border:1px solid var(--line);padding:7px 12px;text-align:left;vertical-align:top}}
+.md-table thead tr{{background:var(--surface-warm)}}
+.md-table th{{font-weight:700;color:var(--ink-900)}}
+.md-table tbody tr:nth-child(even){{background:var(--surface-warm)}}
 .chk{{color:var(--ink-500)}}
 .chk-done{{color:var(--green)}}
 code{{font-family:var(--font-mono);font-size:.84em;background:var(--accent-soft);color:var(--accent);padding:1px 5px;border-radius:5px}}

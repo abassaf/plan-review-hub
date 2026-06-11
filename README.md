@@ -16,37 +16,33 @@ own git worktree and implementation agent. Nothing merges to `main` until you sa
 
 ## Install
 
-### Codex
+```bash
+npx skills add abassaf/plan-review-hub --copy
+```
 
-Clone or copy this repository into Codex's local skills directory:
+This installs the skill for your active agent (Codex, Claude Code, or any compatible
+provider). The `--copy` flag copies the files so you can edit them locally.
 
+### Manual install (fallback)
+
+If `npx skills` is not available, install directly into the provider's skills directory:
+
+**Codex:**
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
 git clone https://github.com/abassaf/plan-review-hub.git \
   "${CODEX_HOME:-$HOME/.codex}/skills/plan-review-hub"
 ```
 
-For a local checkout you are editing, copy the folder instead:
-
+**Claude Code:**
 ```bash
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-cp -R /path/to/plan-review-hub "${CODEX_HOME:-$HOME/.codex}/skills/plan-review-hub"
+mkdir -p .claude/skills
+git clone https://github.com/abassaf/plan-review-hub.git \
+  .claude/skills/plan-review-hub
 ```
 
 Codex reads `SKILL.md` for trigger metadata and `agents/openai.yaml` for optional UI
 metadata.
-
-### Claude Code
-
-```bash
-npx skills add abassaf/plan-review-hub --copy
-```
-
-### Direct clone
-
-```bash
-git clone https://github.com/abassaf/plan-review-hub.git
-```
 
 ## Quickstart
 
