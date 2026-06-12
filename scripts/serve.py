@@ -217,6 +217,8 @@ def md_to_html(text):
         s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
         # italics: a single * pair, not part of a ** run, wrapping non-space text
         s = re.sub(r"(?<!\*)\*(?!\*)(?=\S)([^*\n]+?)(?<=\S)\*(?!\*)", r"<em>\1</em>", s)
+        # markdown links [text](url)
+        s = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', s)
         return s
 
     def checkbox(rendered):
@@ -481,7 +483,70 @@ def audit_counts(audit):
             bug += 1
     return fixed, bug, fine, len(audit.get("findings", []))
 
-# ─── LAN IP detection ──────────────────────────────────────────────────────────
+# ─── research docs ─────────────────────────────────────────────────────────────
+# Markdown files in <plans_parent>/research/ (or <stateDir>/research/) are served
+# as styled reference pages at /docs/<id> and linked from the hub index.
+
+def research_dir():
+    candidate = os.path.join(os.path.dirname(_abs(CFG["plansDir"])), "research")
+    if os.path.isdir(candidate):
+        return candidate
+    return os.path.join(state_dir(), "research")
+
+
+def load_research_docs():
+    d = research_dir()
+    if not os.path.isdir(d):
+        return []
+    docs = []
+    for fname in sorted(os.listdir(d)):
+        if not fname.endswith(".md"):
+            continue
+        fpath = os.path.join(d, fname)
+        try:
+            text = open(fpath, encoding="utf-8").read()
+        except Exception:
+            continue
+        doc_id = fname[:-3]
+        title, tagline = _infer_title_tagline(text)
+        docs.append({"id": doc_id, "title": title, "tagline": tagline, "text": text})
+    return docs
+
+
+def get_research_doc(doc_id):
+    for d in load_research_docs():
+        if d["id"] == doc_id:
+            return d
+    return None
+
+
+def render_doc(doc, theme_css):
+    crumb = f"<a href='/'>Hub</a> › <span>Research</span>"
+    body = f"""
+<div class='wrap'>
+  <div class='with-sidebar'>
+    <div class='sidebar'>
+      <div class='eyebrow' style='margin-bottom:8px'>Research &amp; References</div>
+{''.join(
+    f"<a class='{'active' if d['id']==doc['id'] else ''}' href='/docs/{html.escape(d['id'])}'>"
+    f"<span>{html.escape(d['title'])}</span></a>"
+    for d in load_research_docs()
+)}
+    </div>
+    <div class='main-col'>
+      <div class='eyebrow'>Reference document</div>
+      <h1 class='page-title'>{html.escape(doc['title'])}</h1>
+      {'<p class="lead">'+html.escape(doc['tagline'])+'</p>' if doc['tagline'] else ''}
+      <div class='card' style='margin-top:16px'>
+        <div class='prose'>{md_to_html(doc['text'])}</div>
+      </div>
+    </div>
+  </div>
+  <div class='footer'>Superloop E2E Hub · <a href='/'>hub</a></div>
+</div>"""
+    return page_shell(doc['title'], crumb, body, theme_css)
+
+
 
 def local_ips():
     ips = []
@@ -737,7 +802,7 @@ textarea:focus{{outline:2px solid var(--accent);border-color:transparent}}
 <body>
 <div class="topbar">
   <div class="logo">&#9646;</div>
-  <div class="title-block"><b>Plan Review Hub</b><span class="sub">plan-review-hub</span></div>
+  <div class="title-block"><b>Superloop E2E Hub</b><span class="sub">superloop-e2e</span></div>
   <div class="crumbs">{crumbs_html}</div>
 </div>
 {body_html}
@@ -762,7 +827,7 @@ def render_index(plans, theme_css):
     <p>See <code>examples/plans/</code> for sample plans and <code>docs/plan-format.md</code> for the schema.</p>
   </div>
 </div>"""
-        return page_shell("Plan Review Hub", "Hub", body, theme_css)
+        return page_shell("Superloop E2E Hub", "Hub", body, theme_css)
 
     rows = []
     for p in plans:
@@ -829,16 +894,36 @@ def render_index(plans, theme_css):
             + "".join(audit_rows)
         )
 
+    research_docs = load_research_docs()
+    research_section = ""
+    if research_docs:
+        doc_rows = []
+        for d in research_docs:
+            doc_rows.append(f"""
+<a class='index-row' href='/docs/{html.escape(d['id'])}'>
+  <div class='num'>&#128218;</div>
+  <div class='body'>
+    <h3>{html.escape(d['title'])}</h3>
+    <p>{html.escape(d['tagline'])}</p>
+  </div>
+  <div class='aside'><div style='font-size:11px;color:var(--ink-500)'>reference</div></div>
+</a>""")
+        research_section = (
+            "<div class='eyebrow' style='margin:26px 0 4px'>Research &amp; References</div>"
+            + "".join(doc_rows)
+        )
+
     body = f"""
 <div class='wrap'>
   <div class='hero'>
-    <div class='eyebrow'>Planning hub · {total} plan{'s' if total!=1 else ''}</div>
-    <h1 class='page-title'>Plan Review Hub</h1>
-    <p class='lead'>Review each plan, answer the decisions, set a verdict, and submit. After feedback is collected, Claude dispatches each approved plan to its own git worktree and subagent.</p>
+    <div class='eyebrow'>Superloop E2E Planning · {total} plan{'s' if total!=1 else ''}</div>
+    <h1 class='page-title'>Superloop E2E Hub</h1>
+    <p class='lead'>Review each plan, answer the decisions, set a verdict, and submit feedback. Approved plans will be dispatched to implementation.</p>
   </div>
   {stats_html}
   {''.join(rows)}
   {audits_section}
+  {research_section}
   <div class='card' style='margin-top:20px'>
     <h2>How this works</h2>
     <p style='font-size:13.5px;color:var(--ink-700)'>
@@ -1280,6 +1365,13 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         if path == "/audits":
             data = {a["id"]: a for a in load_audits()}
             return self._send(200, json.dumps(data, indent=2), "application/json", extra_headers=extra_headers)
+
+        if path.startswith("/docs/"):
+            did = path[len("/docs/"):].strip("/")
+            doc = get_research_doc(did)
+            if not doc:
+                return self._404(f"Unknown research doc '{did}'")
+            return self._send(200, render_doc(doc, theme_css), extra_headers=extra_headers)
 
         if path.startswith("/audit/"):
             aid = path[len("/audit/"):].strip("/")
