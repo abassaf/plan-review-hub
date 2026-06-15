@@ -294,22 +294,18 @@ def md_to_html(text):
             i += 1
             continue
 
-        # blockquote: gather consecutive '>' lines, reflow into paragraphs
+        # blockquote: gather consecutive '>' lines, strip the marker, then render
+        # the de-quoted content recursively so nested block structures (GFM
+        # tables, lists, headings, fenced code) inside the quote are parsed
+        # instead of being flattened into prose paragraphs. Plain prose still
+        # reflows correctly because the recursive paragraph handler reflows
+        # soft-wrapped lines the same way.
         if is_quote(line):
             q_lines = []
             while i < n and is_quote(lines[i]):
-                q_lines.append(re.sub(r"^\s*>\s?", "", lines[i].rstrip()))
+                q_lines.append(re.sub(r"^\s*>\s?", "", lines[i]))
                 i += 1
-            paras, buf = [], []
-            for q in q_lines:
-                if q.strip():
-                    buf.append(q.strip())
-                elif buf:
-                    paras.append(" ".join(buf))
-                    buf = []
-            if buf:
-                paras.append(" ".join(buf))
-            inner = "".join(f"<p>{inline(p)}</p>" for p in paras)
+            inner = md_to_html("\n".join(q_lines))
             out.append(f"<blockquote class='md-quote'>{inner}</blockquote>")
             continue
 
