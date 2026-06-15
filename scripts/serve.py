@@ -199,6 +199,23 @@ def _load_openspec(changes_dir):
 
 # ─── markdown renderer ─────────────────────────────────────────────────────────
 
+def inline_md(s, links=True):
+    """Render inline markdown (bold, italic, code, links) to HTML. Escapes HTML first.
+    Pass links=False to collapse [text](url) to just the text — use inside <a> containers
+    to avoid invalid nested anchors."""
+    s = html.escape(s)
+    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+    # italics: a single * pair, not part of a ** run, wrapping non-space text
+    s = re.sub(r"(?<!\*)\*(?!\*)(?=\S)([^*\n]+?)(?<=\S)\*(?!\*)", r"<em>\1</em>", s)
+    # markdown links [text](url)
+    if links:
+        s = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', s)
+    else:
+        s = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1", s)
+    return s
+
+
 def md_to_html(text):
     """
     Minimal Markdown → HTML.
@@ -212,14 +229,7 @@ def md_to_html(text):
     span is never escaped).
     """
     def inline(s):
-        s = html.escape(s)
-        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
-        s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
-        # italics: a single * pair, not part of a ** run, wrapping non-space text
-        s = re.sub(r"(?<!\*)\*(?!\*)(?=\S)([^*\n]+?)(?<=\S)\*(?!\*)", r"<em>\1</em>", s)
-        # markdown links [text](url)
-        s = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', s)
-        return s
+        return inline_md(s)
 
     def checkbox(rendered):
         # html.escape has already run; inject the span safely
@@ -536,7 +546,7 @@ def render_doc(doc, theme_css):
     <div class='main-col'>
       <div class='eyebrow'>Reference document</div>
       <h1 class='page-title'>{html.escape(doc['title'])}</h1>
-      {'<p class="lead">'+html.escape(doc['tagline'])+'</p>' if doc['tagline'] else ''}
+      {'<p class="lead">'+inline_md(doc['tagline'])+'</p>' if doc['tagline'] else ''}
       <div class='card' style='margin-top:16px'>
         <div class='prose'>{md_to_html(doc['text'])}</div>
       </div>
@@ -859,7 +869,7 @@ def render_index(plans, theme_css):
   <div class='num'>{html.escape(p['num'])}</div>
   <div class='body'>
     <h3>{html.escape(p['title'])}{effort_html}</h3>
-    <p>{html.escape(p['tagline'])}</p>
+    <p>{html.escape(p['tagline'] or p.get('headline') or '')}</p>
   </div>
   <div class='aside'>{aside_html}</div>
 </a>""")
@@ -904,7 +914,7 @@ def render_index(plans, theme_css):
   <div class='num'>&#128218;</div>
   <div class='body'>
     <h3>{html.escape(d['title'])}</h3>
-    <p>{html.escape(d['tagline'])}</p>
+    <p>{inline_md(d['tagline'], links=False)}</p>
   </div>
   <div class='aside'><div style='font-size:11px;color:var(--ink-500)'>reference</div></div>
 </a>""")
@@ -960,19 +970,21 @@ def render_plan(plan, plans, theme_css):
         saved = (fb.get("decisions") or {}).get(d["id"], d.get("default"))
         opts_html = []
         for o in d["options"]:
-            is_sel = (saved == o["v"])
+            opt_val = o.get("v") or o.get("value", "")
+            is_sel = (saved == opt_val)
             sel_cls = " sel" if is_sel else ""
             checked = "checked" if is_sel else ""
             rec_badge = " <span style='font-size:10.5px;color:var(--green);font-weight:700'>recommended</span>" if o.get("recommended") else ""
             dec_id = html.escape(d["id"])
-            opt_v = html.escape(o["v"])
+            opt_v = html.escape(opt_val)
             opts_html.append(
                 f"<label class='opt{sel_cls}'>"
                 f"<input type='radio' name='dec__{dec_id}' value='{opt_v}' {checked}>"
                 f"<span>{html.escape(o['label'])}{rec_badge}</span></label>"
             )
+        d_question = d.get("q") or d.get("question", "")
         dec_blocks.append(
-            f"<label class='q'>{html.escape(d['q'])}</label>"
+            f"<label class='q'>{html.escape(d_question)}</label>"
             f"<div class='help-text'>{html.escape(d.get('help',''))}</div>"
             + "".join(opts_html)
         )
