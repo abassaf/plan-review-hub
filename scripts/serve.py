@@ -764,7 +764,7 @@ textarea:focus{{outline:2px solid var(--accent);border-color:transparent}}
 .footer{{color:var(--ink-500);font-size:11.5px;margin-top:28px;padding-top:18px;border-top:1px solid var(--line)}}
 /* ── hub progress summary ── */
 .hub-progress{{display:flex;gap:16px;flex-wrap:wrap;margin:16px 0 6px}}
-.hub-progress .stat{{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:10px 14px;font-size:13px}}
+.hub-progress .stat{{flex:1 1 0;min-width:120px;text-align:center;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:10px 14px;font-size:13px}}
 .hub-progress .stat b{{display:block;font-size:22px;font-weight:800;color:var(--accent)}}
 /* ── audit reports ── */
 .audit-stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:18px 0}}
