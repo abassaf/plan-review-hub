@@ -692,6 +692,11 @@ h1.page-title{{font:700 28px/1.15 var(--font-display);letter-spacing:-.01em;marg
 .index-row .aside{{text-align:right;min-width:130px;flex-shrink:0}}
 /* ── grid layout ── */
 .two-col{{display:grid;grid-template-columns:1fr 260px;gap:22px;align-items:start}}
+/* Grid children default to min-width:auto, so a long unbreakable token (code,
+   file path, URL) forces the 1fr track wider than the track, blowing the grid
+   past the centered .wrap and shifting the page off-center. min-width:0 lets
+   the column shrink and contain overflow instead. */
+.two-col>*{{min-width:0}}
 @media(max-width:860px){{.two-col{{grid-template-columns:1fr}}}}
 .sticky-side{{position:sticky;top:60px}}
 /* ── side nav ── */
@@ -717,8 +722,8 @@ h4.md-h{{font-size:13.5px;font-weight:700;color:var(--ink-700)}}
 .md-table tbody tr:nth-child(even){{background:var(--surface-warm)}}
 .chk{{color:var(--ink-500)}}
 .chk-done{{color:var(--green)}}
-code{{font-family:var(--font-mono);font-size:.84em;background:var(--accent-soft);color:var(--accent);padding:1px 5px;border-radius:5px}}
-pre.code-block{{background:#1e2030;color:#c0caf5;padding:14px 16px;border-radius:var(--radius);overflow:auto;font-size:12.5px;line-height:1.5}}
+code{{font-family:var(--font-mono);font-size:.84em;background:var(--accent-soft);color:var(--accent);padding:1px 5px;border-radius:5px;overflow-wrap:anywhere}}
+pre.code-block{{background:#1e2030;color:#c0caf5;padding:14px 16px;border-radius:var(--radius);overflow:auto;max-width:100%;font-size:12.5px;line-height:1.5}}
 pre.code-block code{{background:none;color:inherit;padding:0;font-size:inherit}}
 /* ── collapsibles ── */
 details.spec-section{{margin:12px 0}}
