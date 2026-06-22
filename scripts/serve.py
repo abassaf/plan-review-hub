@@ -596,6 +596,7 @@ def load_theme_css():
 
 PROGRESS_STATE_CHIP = {
     "done":         ("chip-done",        "Done"),
+    "done_merged":  ("chip-done",        "Done - Merged"),
     "in_progress":  ("chip-in-progress", "In progress"),
     "not_started":  ("chip-none",        "Not started"),
 }
@@ -826,7 +827,7 @@ def render_index(plans, theme_css):
     progress = get_progress()
     total = len(plans)
     decided = sum(1 for p in plans if get_feedback(p["id"]))
-    done_count = sum(1 for pid, pr in progress.items() if pr.get("state") == "done")
+    done_count = sum(1 for pid, pr in progress.items() if pr.get("state") in ("done", "done_merged"))
 
     if not plans:
         body = """
