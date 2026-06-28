@@ -50,6 +50,7 @@ def load_config():
         "stateDir":  ".planning-hub",
         "auditsDir": None,
         "token":     None,
+        "title":     None,
     }
     cfg_path = os.path.join(REPO, "plan-review-hub.config.json")
     if os.path.isfile(cfg_path):
@@ -71,6 +72,7 @@ def load_config():
         "PLAN_HUB_STATE_DIR": ("stateDir",  str),
         "PLAN_HUB_AUDITS_DIR":("auditsDir", str),
         "PLAN_HUB_TOKEN":     ("token",     str),
+        "PLAN_HUB_TITLE":     ("title",     str),
     }
     for env_key, (cfg_key, cast) in env_map.items():
         v = os.environ.get(env_key)
@@ -548,7 +550,7 @@ def render_doc(doc, theme_css):
       </div>
     </div>
   </div>
-  <div class='footer'>Superloop E2E Hub · <a href='/'>hub</a></div>
+  <div class='footer'>{html.escape(CFG.get('title') or 'Plan Review Hub')} · <a href='/'>hub</a></div>
 </div>"""
     return page_shell(doc['title'], crumb, body, theme_css)
 
@@ -814,7 +816,7 @@ textarea:focus{{outline:2px solid var(--accent);border-color:transparent}}
 <body>
 <div class="topbar">
   <div class="logo">&#9646;</div>
-  <div class="title-block"><b>Superloop E2E Hub</b><span class="sub">superloop-e2e</span></div>
+  <div class="title-block"><b>{html.escape(CFG.get('title') or 'Plan Review Hub')}</b><span class="sub">plan-review-hub</span></div>
   <div class="crumbs">{crumbs_html}</div>
 </div>
 {body_html}
@@ -839,7 +841,7 @@ def render_index(plans, theme_css):
     <p>See <code>examples/plans/</code> for sample plans and <code>docs/plan-format.md</code> for the schema.</p>
   </div>
 </div>"""
-        return page_shell("Superloop E2E Hub", "Hub", body, theme_css)
+        return page_shell(CFG.get('title') or 'Plan Review Hub', "Hub", body, theme_css)
 
     rows = []
     for p in plans:
@@ -928,8 +930,8 @@ def render_index(plans, theme_css):
     body = f"""
 <div class='wrap'>
   <div class='hero'>
-    <div class='eyebrow'>Superloop E2E Planning · {total} plan{'s' if total!=1 else ''}</div>
-    <h1 class='page-title'>Superloop E2E Hub</h1>
+    <div class='eyebrow'>Planning · {total} plan{'s' if total!=1 else ''}</div>
+    <h1 class='page-title'>{html.escape(CFG.get('title') or 'Plan Review Hub')}</h1>
     <p class='lead'>Review each plan, answer the decisions, set a verdict, and submit feedback. Approved plans will be dispatched to implementation.</p>
   </div>
   {stats_html}
@@ -1474,6 +1476,7 @@ def parse_args():
     p.add_argument("--state",  dest="stateDir", default=None)
     p.add_argument("--audits", dest="auditsDir", default=None)
     p.add_argument("--token",  default=None)
+    p.add_argument("--title",  default=None)
     return p.parse_args()
 
 
@@ -1482,7 +1485,8 @@ def main():
     # CLI flags override everything
     for attr, key in [("port","port"),("host","host"),("plansDir","plansDir"),
                       ("source","source"),("themePath","themePath"),
-                      ("stateDir","stateDir"),("auditsDir","auditsDir"),("token","token")]:
+                      ("stateDir","stateDir"),("auditsDir","auditsDir"),("token","token"),
+                      ("title","title")]:
         v = getattr(args, attr)
         if v is not None:
             CFG[key] = v
