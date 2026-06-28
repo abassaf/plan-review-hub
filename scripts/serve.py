@@ -32,6 +32,9 @@ import argparse
 import sys
 import http.cookies
 import datetime
+import threading
+import uuid
+import hashlib
 
 # ─── configuration ────────────────────────────────────────────────────────────
 
@@ -546,13 +549,14 @@ def render_doc(doc, theme_css):
       <h1 class='page-title'>{html.escape(doc['title'])}</h1>
       {'<p class="lead">'+inline_md(doc['tagline'])+'</p>' if doc['tagline'] else ''}
       <div class='card' style='margin-top:16px'>
-        <div class='prose'>{md_to_html(doc['text'])}</div>
+        <div class='prose anno-content' data-srckey='{html.escape(doc['id'])}' data-srclabel='{html.escape(doc['title'])}'>{md_to_html(doc['text'])}</div>
       </div>
     </div>
   </div>
   <div class='footer'>{html.escape(CFG.get('title') or 'Plan Review Hub')} · <a href='/'>hub</a></div>
 </div>"""
-    return page_shell(doc['title'], crumb, body, theme_css)
+    # decision: scope_pages = plus_docs; note: research docs are feedback-only (no remove)
+    return page_shell(doc['title'], crumb, body, theme_css, page_key=doc['id'], anno_mode="feedback-only")
 
 
 
@@ -643,7 +647,578 @@ def render_progress_card(plan_id, progress):
 </div>"""
 
 
-def page_shell(title, crumbs_html, body_html, theme_css):
+# ─── annotation / review layer (feedback + removed) ────────────────────────────
+# A select-text annotation layer that wraps the plan/audit content containers
+# (any element carrying data-srckey). Two actions per selection: leave FEEDBACK
+# (blue) or mark REMOVE/cut (red). Persisted server-side as append-only jsonl in
+# the state dir, replayed on load, re-anchored by char offsets with a text
+# fallback. Ported from the loop-engineering draft review hub; post-specific bits
+# (LinkedIn cards, "see more" clamp, share-card image route) were left behind.
+
+_anno_lock = threading.Lock()
+_removed_lock = threading.Lock()
+
+
+def _to_int(s):
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_key(key):
+    """Filesystem-safe annotation file key (no path traversal)."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", (key or "general"))[:120]
+
+
+def annotations_dir():
+    d = os.path.join(state_dir(), "annotations")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def annotation_path(key):
+    return os.path.join(annotations_dir(), f"{_safe_key(key)}.jsonl")
+
+
+def removed_dir():
+    d = os.path.join(state_dir(), "annotations-removed")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def removed_path(key):
+    """Per-page removed/cut event log (decision: removed_scope = per_page)."""
+    return os.path.join(removed_dir(), f"{_safe_key(key)}.jsonl")
+
+
+def _anno_id(rec):
+    """Stable id for a feedback annotation: its own id if present, else a content
+    hash so notes written before ids existed can still be targeted for removal."""
+    if rec.get("id"):
+        return rec["id"]
+    basis = "|".join((
+        rec.get("ts", ""), rec.get("kind", ""), rec.get("text", ""),
+        rec.get("selection", ""), rec.get("srckey", ""),
+    ))
+    return "f_" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
+
+
+def new_anno_id():
+    return "fb_" + uuid.uuid4().hex[:12]
+
+
+def load_annotations(key):
+    """Selection-anchored feedback notes for one page key (plan id / audit id)."""
+    p = annotation_path(key)
+    if not os.path.isfile(p):
+        return []
+    notes = []
+    with open(p, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rec["id"] = _anno_id(rec)
+            notes.append(rec)
+    return notes
+
+
+def remove_annotation(key, rid):
+    """Delete the note whose effective id == rid by rewriting the jsonl without it.
+    Returns how many lines were removed; unparseable lines are preserved as-is."""
+    p = annotation_path(key)
+    if not os.path.isfile(p):
+        return 0
+    with _anno_lock:
+        kept, removed = [], 0
+        with open(p, encoding="utf-8") as fh:
+            for line in fh:
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    rec = json.loads(s)
+                except json.JSONDecodeError:
+                    kept.append(s)
+                    continue
+                if _anno_id(rec) == rid:
+                    removed += 1
+                    continue
+                kept.append(s)
+        if removed:
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(("\n".join(kept) + "\n") if kept else "")
+    return removed
+
+
+def _append_removed_event(key, ev):
+    """Append-only event log for removed/cut passages (add / remove-undo), per page."""
+    ev = dict(ev)
+    ev.setdefault("ts", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    with _removed_lock:
+        with open(removed_path(key), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(ev) + "\n")
+    return ev
+
+
+def load_removed(key):
+    """Replay one page's removed-cut event log into its current ordered set."""
+    p = removed_path(key)
+    if not os.path.isfile(p):
+        return []
+    items, order = {}, []
+    with open(p, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            op = ev.get("op")
+            if op == "add":
+                i = ev.get("id")
+                if not i:
+                    continue
+                items[i] = {
+                    "id": i,
+                    "srckey": ev.get("srckey", ""),
+                    "srclabel": ev.get("srclabel", ""),
+                    "text": ev.get("text", ""),
+                    "gstart": ev.get("gstart"),
+                    "gend": ev.get("gend"),
+                    "reason": ev.get("reason", ""),
+                    "ts": ev.get("ts", ""),
+                }
+                if i not in order:
+                    order.append(i)
+            elif op == "remove":
+                i = ev.get("id")
+                if i in items:
+                    del items[i]
+                    if i in order:
+                        order.remove(i)
+    return [items[i] for i in order if i in items]
+
+
+# CSS for the annotation overlay. Themed to the hub's CSS variables (decision:
+# palette = themed): blue (--blue) = feedback, red (--red) = removed/cut, dark
+# floating surfaces use --ink-900. Hardcoded fallbacks kept for safety.
+ANNO_CSS = """
+/* ── annotation / review layer (themed to hub vars) ── */
+.anno-content{-webkit-user-select:text;user-select:text}
+.anno{border-radius:2px;cursor:help}
+.anno.anno-fb{background:var(--blue-bg,#dbeafe);box-shadow:inset 0 -2px 0 var(--blue,#2563eb)}
+.anno.anno-cut{background:var(--red-bg,#fee2e2);text-decoration:line-through;text-decoration-color:var(--red,#dc2626);box-shadow:inset 0 0 0 1px var(--red,#dc2626)}
+.anno-tip{position:absolute;z-index:70;max-width:300px;background:var(--ink-900,#111827);color:var(--surface,#fff);border-radius:9px;padding:8px 11px;font:13px/1.45 var(--font-body,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif);box-shadow:var(--shadow-sm,0 10px 30px rgba(0,0,0,.28));pointer-events:none}
+.anno-tip[hidden]{display:none}
+.anno-tip .anno-tip-row{margin:0}
+.anno-tip .anno-tip-row+.anno-tip-row{border-top:1px solid rgba(255,255,255,.16);padding-top:5px;margin-top:5px}
+.anno-tip .anno-tip-kind{font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;margin-right:5px}
+.anno-tip .anno-tip-kind.k-feedback{color:var(--blue-bg,#8ec5ff)}
+.anno-tip .anno-tip-kind.k-removed-cut{color:var(--red-bg,#ff9a8a)}
+.anno-tip .anno-tip-note{color:var(--surface,#e9e9e9)}
+.keep-pop{position:absolute;z-index:60;width:250px;background:var(--ink-900,#111827);color:var(--surface,#fff);border-radius:var(--radius-sm,10px);padding:9px;box-shadow:var(--shadow-sm,0 10px 30px rgba(0,0,0,.28))}
+.keep-pop[hidden]{display:none}
+.keep-pop textarea{width:100%;min-height:46px;border:0;border-radius:6px;padding:6px 8px;font:13px/1.4 inherit;resize:vertical;background:var(--surface,#fff);color:var(--ink-900,#111827)}
+.keep-pop .kp-row{display:flex;gap:8px;align-items:center;margin-top:7px}
+.keep-pop .kp-feedback{flex:1;background:var(--blue,#2563eb);color:#fff;border:0;border-radius:7px;padding:7px 13px;font:600 16px/1 inherit;cursor:pointer}
+.keep-pop .kp-feedback:hover{filter:brightness(1.07)}
+.keep-pop .kp-remove{background:var(--red,#dc2626);color:#fff;border:0;border-radius:7px;padding:7px 14px;font:600 16px/1 inherit;cursor:pointer}
+.keep-pop .kp-remove:hover{filter:brightness(1.07)}
+.keep-pop .kp-notice{margin-top:7px;font-size:12px;color:var(--yellow-bg,#ffd9a8)}
+.keep-pop .kp-notice[hidden]{display:none}
+.keep-toggle{position:fixed;right:18px;bottom:18px;z-index:50;background:var(--ink-900,#111827);color:var(--surface,#fff);border:0;border-radius:var(--radius-pill,999px);padding:11px 17px;font:600 14px/1 inherit;cursor:pointer;box-shadow:var(--shadow-sm,0 6px 20px rgba(0,0,0,.2));display:flex;gap:8px;align-items:center}
+.keep-toggle .keep-count{background:var(--surface,#fff);color:var(--ink-900,#111827);border-radius:var(--radius-pill,999px);min-width:21px;height:21px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;padding:0 5px}
+.keep-tray{position:fixed;top:0;right:0;width:374px;max-width:93vw;height:100vh;z-index:55;background:var(--surface,#fff);border-left:1px solid var(--line,#e4e1d9);box-shadow:-10px 0 36px rgba(0,0,0,.14);display:flex;flex-direction:column}
+.keep-tray[hidden]{display:none}
+.keep-tray-head{display:flex;gap:10px;align-items:center;padding:15px 16px;border-bottom:1px solid var(--line,#e4e1d9)}
+.keep-tray-head strong{font-size:15px}
+.keep-tray-head .keep-tray-close{margin-left:auto;background:none;border:0;font-size:20px;line-height:1;color:var(--ink-500,#6b6862);cursor:pointer}
+.anno-tabs{display:flex;gap:6px;padding:10px 14px 0}
+.anno-tab{flex:1;background:var(--surface-warm,#efece5);border:1px solid var(--line,#e4e1d9);border-bottom:0;border-radius:8px 8px 0 0;padding:8px 6px;font:600 12.5px/1 inherit;color:var(--ink-500,#6b6862);cursor:pointer;display:flex;gap:6px;align-items:center;justify-content:center}
+.anno-tab.on{background:var(--surface,#fff);color:var(--ink-900,#1d1c1a)}
+.anno-tab .fb-count,.anno-tab .cut-count{background:var(--line,#e4e1d9);color:var(--ink-500,#6b6862);border-radius:999px;min-width:18px;height:17px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;padding:0 5px}
+.anno-tab.on .fb-count{background:var(--blue-bg,#d7e6f6);color:var(--blue,#0a66c2)}
+.anno-tab.on .cut-count{background:var(--red-bg,#f3d3cf);color:var(--red,#9a3b2e)}
+.anno-pane{flex:1;overflow:auto;border-top:1px solid var(--line,#e4e1d9)}
+.anno-pane[hidden]{display:none}
+.fb-list,.cut-list{padding:10px 14px}
+.fb-empty,.cut-empty{color:var(--ink-500,#6b6862);font-size:13px;padding:4px 16px 14px;margin:0}
+.fb-item{background:var(--surface,#fff);border:1px solid var(--blue-bg,#dbe7f2);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+.fb-item .fi-top{display:flex;gap:8px;align-items:center;margin-bottom:5px}
+.fb-item .fi-src{font-size:10.5px;font-weight:700;color:var(--blue,#0a66c2);text-transform:uppercase;letter-spacing:.04em}
+.fb-item .fi-remove{margin-left:auto;background:none;border:0;color:var(--red,#9a3b2e);font:600 15px/1 inherit;cursor:pointer}
+.fb-item .fi-sel{border-left:3px solid var(--blue,#9ec5ef);padding-left:8px;color:var(--ink-500,#55524c);font-style:italic;font-size:12.5px;margin:0 0 5px;white-space:pre-wrap}
+.fb-item .fi-note{font-size:13.5px;color:var(--ink-900,#1d1c1a);white-space:pre-wrap}
+.cut-item{background:var(--surface,#fff);border:1px solid var(--red-bg,#efd6d2);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+.cut-item .ci-top{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.cut-item .ci-src{font-size:10.5px;font-weight:700;color:var(--red,#9a3b2e);text-transform:uppercase;letter-spacing:.04em}
+.cut-item .ci-undo{margin-left:auto;background:none;border:0;color:var(--red,#9a3b2e);font:600 12px/1 inherit;cursor:pointer}
+.cut-item .ci-text{margin:0 0 6px;padding-left:10px;border-left:3px solid var(--red,#e07a70);color:var(--ink-900,#1d1c1a);font-size:13.5px;line-height:1.45;white-space:pre-wrap;text-decoration:line-through;text-decoration-color:var(--red,#d6a5a0)}
+.cut-item .ci-reason{font-size:12.5px;color:var(--ink-500,#6b6862)}
+"""
+
+
+def annotation_ui_html():
+    """Selection popup (feedback / remove), hover tooltip, and the Feedback/Removed tray."""
+    return """
+<div id="keep-pop" class="keep-pop" hidden>
+  <textarea class="kp-comment" placeholder="Feedback..."></textarea>
+  <div class="kp-row">
+    <button type="button" class="kp-feedback" title="Submit feedback (Cmd/Ctrl+Enter)">&#10003;</button>
+    <button type="button" class="kp-remove" title="Mark as removed/cut (Cmd/Ctrl+Delete)">&times;</button>
+  </div>
+  <div class="kp-notice" hidden></div>
+</div>
+<div id="anno-tip" class="anno-tip" hidden></div>
+<button id="cut-toggle" class="keep-toggle" type="button">Feedback / Removed <span class="keep-count anno-total">0</span></button>
+<aside id="cut-tray" class="keep-tray" hidden>
+  <div class="keep-tray-head"><strong>Feedback / Removed</strong>
+  <button type="button" class="keep-tray-close" title="Close">&times;</button></div>
+  <div class="anno-tabs">
+    <button type="button" class="anno-tab on" data-tab="feedback">Feedback <span class="fb-count">0</span></button>
+    <button type="button" class="anno-tab" data-tab="removed">Removed <span class="cut-count">0</span></button>
+  </div>
+  <div class="anno-pane" data-pane="feedback">
+    <div class="fb-list"></div>
+    <p class="fb-empty">No feedback yet. Select text in a plan or audit and press the blue tick.</p>
+  </div>
+  <div class="anno-pane" data-pane="removed" hidden>
+    <div class="cut-list"></div>
+    <p class="cut-empty">No removed sections yet. Select text and press the red cross.</p>
+  </div>
+</aside>
+"""
+
+
+# Selection -> char offsets over a [data-srckey] container -> highlight; a floating
+# two-button popup (blue tick = feedback, red cross = remove); a Feedback/Removed
+# sidebar with live counts; hover tooltips; Cmd/Ctrl+Enter / Cmd/Ctrl+Delete
+# shortcuts. Plain-http safe (no clipboard-only / secure-context APIs).
+ANNO_SCRIPT = """
+<script>
+(function(){
+  var POP = document.getElementById('keep-pop');
+  if(!POP){ return; }
+  var TRAY = document.getElementById('cut-tray');
+  var TOGGLE = document.getElementById('cut-toggle');
+  var state = { feedback: [], removed: [] };
+  var snap = null;
+  var FB = POP.querySelector('.kp-feedback');
+  var RM = POP.querySelector('.kp-remove');
+  var COMMENT = POP.querySelector('.kp-comment');
+  var NOTICE = POP.querySelector('.kp-notice');
+  // decision note: research-doc pages are feedback-only (no remove/cut action).
+  var FEEDBACK_ONLY = (document.body.getAttribute('data-anno-mode')==='feedback-only');
+  if(FEEDBACK_ONLY){
+    if(RM){ RM.style.display='none'; }
+    document.querySelectorAll('.anno-tab[data-tab="removed"],.anno-pane[data-pane="removed"]').forEach(function(x){ x.style.display='none'; });
+  }
+
+  function el(tag, cls){ var e=document.createElement(tag); if(cls){ e.className=cls; } return e; }
+
+  // ---- offsets + highlight by character range over a container's text ----
+  function nearestContainer(node){
+    var n = (node && node.nodeType===3) ? node.parentNode : node;
+    while(n && n!==document.body){
+      if(n.nodeType===1 && n.hasAttribute && n.hasAttribute('data-srckey')){ return n; }
+      n = n.parentNode;
+    }
+    return null;
+  }
+  function offsetOf(container, node, off){
+    var r=document.createRange(); r.selectNodeContents(container);
+    try{ r.setEnd(node, off); }catch(e){ return 0; }
+    return r.toString().length;
+  }
+  function containerByKey(key){
+    if(!key){ return null; }
+    var list=document.querySelectorAll('[data-srckey]');
+    for(var i=0;i<list.length;i++){ if(list[i].getAttribute('data-srckey')===key){ return list[i]; } }
+    return null;
+  }
+  function highlightRange(container, gstart, gend, id, cls, kind, note){
+    if(gstart==null||gend==null||gend<=gstart){ return; }
+    var walker=document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+    var pos=0, node, segs=[];
+    while((node=walker.nextNode())){
+      var len=node.nodeValue.length, nStart=pos, nEnd=pos+len; pos=nEnd;
+      var s=Math.max(gstart,nStart), e=Math.min(gend,nEnd);
+      if(e>s){ segs.push({node:node, from:s-nStart, to:e-nStart}); }
+    }
+    for(var i=segs.length-1;i>=0;i--){
+      var seg=segs[i], range=document.createRange();
+      try{
+        range.setStart(seg.node, seg.from); range.setEnd(seg.node, seg.to);
+        var sp=el('span','anno '+cls);
+        sp.setAttribute('data-anno-id', id);
+        sp.setAttribute('data-anno-kind', kind);
+        sp.setAttribute('data-anno-note', note||'');
+        range.surroundContents(sp);
+      }catch(e){}
+    }
+  }
+  function applyFeedbackHighlight(item){
+    var c=containerByKey(item.srckey); if(!c){ return; }
+    var txt=c.textContent, gs=item.gstart, ge=item.gend, sel=item.selection||'';
+    if(gs==null||ge==null||txt.substring(gs,ge)!==sel){
+      var idx = sel ? txt.indexOf(sel) : -1;
+      if(idx>=0){ gs=idx; ge=idx+sel.length; } else { return; }
+    }
+    highlightRange(c, gs, ge, item.id, 'anno-fb', 'Feedback', item.text||'');
+  }
+  function applyRemovedHighlight(item){
+    var c=containerByKey(item.srckey); if(!c){ return; }
+    var txt=c.textContent, gs=item.gstart, ge=item.gend, sel=item.text||'';
+    if(gs==null||ge==null||txt.substring(gs,ge)!==sel){
+      var idx = sel ? txt.indexOf(sel) : -1;
+      if(idx>=0){ gs=idx; ge=idx+sel.length; } else { return; }
+    }
+    highlightRange(c, gs, ge, item.id, 'anno-cut', 'Removed/Cut', item.reason||'');
+  }
+  function unhighlight(id){
+    document.querySelectorAll('span.anno[data-anno-id="'+id+'"]').forEach(function(sp){
+      var p=sp.parentNode; while(sp.firstChild){ p.insertBefore(sp.firstChild, sp); }
+      p.removeChild(sp); p.normalize();
+    });
+  }
+  window.__clearAnno = unhighlight;
+
+  // ---- floating popup ----
+  function hidePop(){ POP.setAttribute('hidden',''); snap=null; hideNotice(); }
+  function showPop(rect){
+    POP.removeAttribute('hidden');
+    COMMENT.value=''; COMMENT.placeholder='Feedback...'; hideNotice();
+    var top=rect.bottom+window.scrollY+8, left=rect.left+window.scrollX;
+    var maxL=window.scrollX+document.documentElement.clientWidth-POP.offsetWidth-10;
+    if(left>maxL){ left=maxL; } if(left<window.scrollX+8){ left=window.scrollX+8; }
+    POP.style.top=top+'px'; POP.style.left=left+'px';
+  }
+  document.addEventListener('mouseup', function(e){
+    if(POP.contains(e.target)){ return; }
+    var sel=window.getSelection();
+    if(!sel||sel.isCollapsed||!sel.rangeCount){ hidePop(); return; }
+    var range=sel.getRangeAt(0), c=nearestContainer(range.commonAncestorContainer);
+    if(!c){ hidePop(); return; }
+    var a=offsetOf(c, range.startContainer, range.startOffset);
+    var b=offsetOf(c, range.endContainer, range.endOffset);
+    if(b<a){ var t=a; a=b; b=t; }
+    var text=c.textContent.substring(a,b);
+    if(!text.trim()){ hidePop(); return; }
+    snap={srckey:c.getAttribute('data-srckey'),
+          srclabel:c.getAttribute('data-srclabel')||c.getAttribute('data-srckey'),
+          gstart:a, gend:b, text:text};
+    showPop(range.getBoundingClientRect());
+  });
+  document.addEventListener('keydown', function(e){
+    if(e.key==='Escape'){ hidePop(); return; }
+    if(!POP || POP.hasAttribute('hidden') || !POP.contains(e.target)){ return; }
+    var mod = e.metaKey||e.ctrlKey;
+    // Cmd/Ctrl+Enter = feedback (blue tick). Cmd/Ctrl+Delete or +Backspace = remove (red cross).
+    if(mod && (e.key==='Enter'||e.keyCode===13)){ e.preventDefault(); if(FB){ FB.click(); } return; }
+    if(mod && (e.key==='Delete'||e.key==='Backspace'||e.keyCode===46||e.keyCode===8)){ e.preventDefault(); if(FEEDBACK_ONLY){ return; } if(RM){ RM.click(); } return; }
+  });
+  function showNotice(msg){ if(!NOTICE){ return; } NOTICE.textContent=msg; NOTICE.removeAttribute('hidden'); }
+  function hideNotice(){ if(!NOTICE){ return; } NOTICE.textContent=''; NOTICE.setAttribute('hidden',''); }
+  function clearSel(){ var s=window.getSelection(); if(s){ s.removeAllRanges(); } }
+  // ---- two actions: blue tick = feedback (default), red cross = remove/cut ----
+  if(FB){ FB.addEventListener('click', function(){
+    if(!snap){ return; }
+    var s=snap, comment=COMMENT.value;
+    saveFeedback(s, comment).then(function(res){
+      if(res&&res.ok){ showNotice('Feedback saved'); clearSel(); openTray(); showTab('feedback'); setTimeout(hidePop, 800); }
+      else { showNotice((res&&res.error)||'Could not save'); }
+    }).catch(function(){ showNotice('Could not save'); });
+  }); }
+  if(RM){
+    RM.addEventListener('mouseenter', function(){ COMMENT.placeholder='Reason (optional)'; });
+    RM.addEventListener('mouseleave', function(){ COMMENT.placeholder='Feedback...'; });
+    RM.addEventListener('click', function(){
+      if(!snap){ return; }
+      var s=snap, reason=COMMENT.value;
+      hidePop(); recordCut(s, reason); clearSel();
+    });
+  }
+
+  // ---- server calls ----
+  function post(url, obj){
+    var body=new URLSearchParams();
+    for(var k in obj){ if(obj.hasOwnProperty(k)){ body.append(k, obj[k]==null?'':obj[k]); } }
+    return fetch(url, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body.toString()});
+  }
+  function saveFeedback(s, comment){
+    var page=document.body.getAttribute('data-page')||'';
+    return post('/anno-feedback-add', {page:page, srckey:s.srckey, srclabel:s.srclabel,
+      text:s.text, comment:comment||'', gstart:s.gstart, gend:s.gend})
+      .then(function(r){ return r.json(); })
+      .then(function(res){
+        if(res&&res.ok&&res.id){
+          var item={id:res.id, kind:'selection', srckey:s.srckey, srclabel:s.srclabel,
+            gstart:s.gstart, gend:s.gend, selection:s.text, text:comment||''};
+          applyFeedbackHighlight(item);
+          state.feedback.push(item); renderFeedbackList();
+        }
+        return res;
+      });
+  }
+  function recordCut(s, reason){
+    var id='r_'+Date.now().toString(36)+'_'+Math.floor(Math.random()*1e6).toString(36);
+    var page=document.body.getAttribute('data-page')||'';
+    post('/anno-removed-add', {page:page, id:id, srckey:s.srckey, srclabel:s.srclabel, text:s.text, gstart:s.gstart, gend:s.gend, reason:reason||''})
+      .then(function(r){ return r.json(); })
+      .then(function(item){
+        if(!item||!item.id){ return; }
+        state.removed.push(item); renderRemoved(); applyRemovedHighlight(item); openTray(); showTab('removed');
+      }).catch(function(){});
+  }
+  function undoCut(id){
+    var page=document.body.getAttribute('data-page')||'';
+    post('/anno-removed-undo', {page:page, id:id}).then(function(){
+      state.removed=state.removed.filter(function(x){ return x.id!==id; });
+      unhighlight(id); renderRemoved();
+    });
+  }
+
+  // ---- removed / cut panel rendering ----
+  function buildCutItem(item){
+    var it=el('div','cut-item'); it.setAttribute('data-id', item.id);
+    var top=el('div','ci-top');
+    var src=el('span','ci-src'); src.textContent=item.srclabel||item.srckey||'source';
+    var undo=el('button','ci-undo'); undo.type='button'; undo.textContent='Undo';
+    undo.addEventListener('click', function(){ undoCut(item.id); });
+    top.appendChild(src); top.appendChild(undo);
+    var tx=el('div','ci-text'); tx.textContent=item.text;
+    it.appendChild(top); it.appendChild(tx);
+    if(item.reason){ var rs=el('div','ci-reason'); rs.textContent='Reason: '+item.reason; it.appendChild(rs); }
+    return it;
+  }
+  function renderRemoved(){
+    document.querySelectorAll('.cut-list').forEach(function(listEl){
+      listEl.innerHTML='';
+      state.removed.forEach(function(item){ listEl.appendChild(buildCutItem(item)); });
+    });
+    document.querySelectorAll('.cut-empty').forEach(function(e){ e.style.display = state.removed.length ? 'none' : 'block'; });
+    document.querySelectorAll('.cut-count').forEach(function(e){ e.textContent=state.removed.length; });
+    updateTotal();
+  }
+
+  // ---- feedback panel rendering ----
+  function removeFeedback(id){
+    var page=document.body.getAttribute('data-page')||'';
+    post('/anno-feedback-remove', {page:page, id:id}).then(function(r){ return r.json(); }).then(function(res){
+      if(res&&res.ok){
+        state.feedback=state.feedback.filter(function(x){ return x.id!==id; });
+        unhighlight(id); renderFeedbackList();
+      }
+    });
+  }
+  function buildFeedbackItem(item){
+    var it=el('div','fb-item'); it.setAttribute('data-id', item.id);
+    var top=el('div','fi-top');
+    var src=el('span','fi-src'); src.textContent=item.srclabel||item.srckey||'general';
+    var rm=el('button','fi-remove'); rm.type='button'; rm.textContent='\\u00d7'; rm.title='Remove this feedback';
+    rm.addEventListener('click', function(){ removeFeedback(item.id); });
+    top.appendChild(src); top.appendChild(rm);
+    it.appendChild(top);
+    if(item.selection){ var sl=el('div','fi-sel'); sl.textContent=item.selection; it.appendChild(sl); }
+    var nt=el('div','fi-note'); nt.textContent=item.text||'(no note)'; it.appendChild(nt);
+    return it;
+  }
+  function renderFeedbackList(){
+    document.querySelectorAll('.fb-list').forEach(function(listEl){
+      listEl.innerHTML='';
+      state.feedback.forEach(function(item){ listEl.appendChild(buildFeedbackItem(item)); });
+    });
+    document.querySelectorAll('.fb-empty').forEach(function(e){ e.style.display = state.feedback.length ? 'none' : 'block'; });
+    document.querySelectorAll('.fb-count').forEach(function(e){ e.textContent=state.feedback.length; });
+    updateTotal();
+  }
+  function updateTotal(){
+    document.querySelectorAll('.anno-total').forEach(function(e){ e.textContent=state.feedback.length+state.removed.length; });
+  }
+
+  // ---- tray toggle + tabs ----
+  function openTray(){ if(TRAY){ TRAY.removeAttribute('hidden'); } }
+  function closeTray(){ if(TRAY){ TRAY.setAttribute('hidden',''); } }
+  if(TOGGLE){ TOGGLE.addEventListener('click', function(){ if(TRAY.hasAttribute('hidden')){ openTray(); } else { closeTray(); } }); }
+  var trayClose=document.querySelector('.keep-tray-close'); if(trayClose){ trayClose.addEventListener('click', closeTray); }
+  function showTab(name){
+    document.querySelectorAll('.anno-tab').forEach(function(t){ t.classList.toggle('on', t.getAttribute('data-tab')===name); });
+    document.querySelectorAll('.anno-pane').forEach(function(p){
+      if(p.getAttribute('data-pane')===name){ p.removeAttribute('hidden'); } else { p.setAttribute('hidden',''); }
+    });
+  }
+  document.querySelectorAll('.anno-tab').forEach(function(t){
+    t.addEventListener('click', function(){ showTab(t.getAttribute('data-tab')); });
+  });
+
+  // ---- annotation hover tooltip (feedback + removed; shows kind + note) ----
+  var TIP=document.getElementById('anno-tip'), tipSig='';
+  function annosAt(node){
+    var out=[], seen={}, n=(node&&node.nodeType===3)?node.parentNode:node;
+    while(n && n!==document.body){
+      if(n.nodeType===1 && n.classList && n.classList.contains('anno')){
+        var id=n.getAttribute('data-anno-id');
+        if(!seen[id]){ seen[id]=1; out.push({kind:n.getAttribute('data-anno-kind')||'Note', note:n.getAttribute('data-anno-note')||''}); }
+      }
+      n=n.parentNode;
+    }
+    return out;
+  }
+  function buildTip(annos){
+    if(!TIP){ return; }
+    TIP.innerHTML='';
+    annos.forEach(function(a){
+      var row=el('div','anno-tip-row');
+      var k=el('span','anno-tip-kind k-'+(a.kind||'').toLowerCase().replace(/[^a-z]+/g,'-')); k.textContent=a.kind;
+      var t=el('span','anno-tip-note'); t.textContent=a.note?a.note:'(no note)';
+      row.appendChild(k); row.appendChild(t); TIP.appendChild(row);
+    });
+    TIP.removeAttribute('hidden');
+  }
+  function positionTip(x,y){
+    if(!TIP){ return; }
+    var left=x+window.scrollX+12, top=y+window.scrollY+16;
+    var maxL=window.scrollX+document.documentElement.clientWidth-TIP.offsetWidth-10;
+    if(left>maxL){ left=maxL; } if(left<window.scrollX+8){ left=window.scrollX+8; }
+    TIP.style.left=left+'px'; TIP.style.top=top+'px';
+  }
+  if(TIP){
+    document.addEventListener('mousemove', function(e){
+      var a=annosAt(e.target);
+      if(!a.length){ if(tipSig){ TIP.setAttribute('hidden',''); tipSig=''; } return; }
+      var sig=a.map(function(x){ return x.kind+':'+x.note; }).join('|');
+      if(sig!==tipSig){ buildTip(a); tipSig=sig; }
+      positionTip(e.clientX, e.clientY);
+    });
+  }
+
+  // ---- init: load feedback annotations + removed, render, re-highlight ----
+  var __page=document.body.getAttribute('data-page')||'';
+  fetch('/anno-feedback?page='+encodeURIComponent(__page)).then(function(r){ return r.json(); })
+    .then(function(data){
+      state.feedback=(data&&data.items)||[];
+      state.feedback.forEach(applyFeedbackHighlight);
+      renderFeedbackList();
+    }).catch(function(){ renderFeedbackList(); });
+  fetch('/anno-removed?page='+encodeURIComponent(__page)).then(function(r){ return r.json(); }).then(function(data){
+    state.removed=(data&&data.items)||[];
+    renderRemoved();
+    state.removed.forEach(applyRemovedHighlight);
+  }).catch(function(){ renderRemoved(); });
+})();
+</script>
+"""
+
+
+def page_shell(title, crumbs_html, body_html, theme_css, page_key="", anno_mode="full"):
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -811,15 +1386,18 @@ textarea:focus{{outline:2px solid var(--accent);border-color:transparent}}
 .verdict-fixed{{background:var(--green-bg);color:var(--green)}}
 .verdict-todo{{background:var(--yellow-bg);color:var(--yellow)}}
 .verdict-fine{{background:var(--blue-bg);color:var(--blue)}}
+{ANNO_CSS}
 </style>
 </head>
-<body>
+<body data-page="{html.escape(page_key)}" data-anno-mode="{html.escape(anno_mode)}">
 <div class="topbar">
   <div class="logo">&#9646;</div>
   <div class="title-block"><b>{html.escape(CFG.get('title') or 'Plan Review Hub')}</b><span class="sub">plan-review-hub</span></div>
   <div class="crumbs">{crumbs_html}</div>
 </div>
 {body_html}
+{annotation_ui_html() if page_key else ""}
+{ANNO_SCRIPT if page_key else ""}
 </body>
 </html>"""
 
@@ -1075,7 +1653,7 @@ def render_plan(plan, plans, theme_css):
       {headline_html}
       {progress_card}
       {audits_card}
-      {''.join(doc_sections)}
+      <div class='anno-content' data-srckey='{html.escape(pid)}' data-srclabel='{html.escape(plan['title'])}'>{''.join(doc_sections)}</div>
       <div class='card fb'>
         <h2>Your feedback</h2>
         <form id='fbform'>
@@ -1158,7 +1736,7 @@ def render_plan(plan, plans, theme_css):
 </script>"""
 
     crumbs = f"<a href='/'>Hub</a> &nbsp;/&nbsp; Plan {html.escape(plan['num'])}"
-    return page_shell(f"{plan['title']} — Plan Review Hub", crumbs, body, theme_css)
+    return page_shell(f"{plan['title']} — Plan Review Hub", crumbs, body, theme_css, page_key=pid)
 
 
 AUDIT_BADGE = {
@@ -1290,12 +1868,12 @@ def render_audit(audit, theme_css):
   </div>
   {stats_html}
   {why_html}
-  {''.join(sections_html) or "<div class='empty-state'><h2>No findings</h2><p>This audit has no findings yet.</p></div>"}
+  <div class='anno-content' data-srckey='{html.escape(aid)}' data-srclabel='{html.escape(audit['title'])}'>{''.join(sections_html) or "<div class='empty-state'><h2>No findings</h2><p>This audit has no findings yet.</p></div>"}</div>
   <div class='footer'>Generated {today} · audit <code>{html.escape(aid)}</code> · {summary}</div>
 </div>"""
 
     crumbs = f"<a href='/'>Hub</a> &nbsp;/&nbsp; Audit"
-    return page_shell(f"{audit['title']} — Findings audit", crumbs, body, theme_css)
+    return page_shell(f"{audit['title']} — Findings audit", crumbs, body, theme_css, page_key=aid)
 
 # ─── token / cookie auth ───────────────────────────────────────────────────────
 
@@ -1382,6 +1960,21 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             data = {a["id"]: a for a in load_audits()}
             return self._send(200, json.dumps(data, indent=2), "application/json", extra_headers=extra_headers)
 
+        if path == "/anno-feedback":
+            key = params.get("page", [""])[0]
+            anns = [{
+                "id": n["id"], "kind": n.get("kind", ""),
+                "srckey": n.get("srckey", ""), "srclabel": n.get("srclabel", ""),
+                "gstart": n.get("gstart"), "gend": n.get("gend"),
+                "selection": n.get("selection", ""), "text": n.get("text", ""),
+                "ts": n.get("ts", ""),
+            } for n in load_annotations(key)]
+            return self._send(200, json.dumps({"items": anns}), "application/json", extra_headers=extra_headers)
+
+        if path == "/anno-removed":
+            key = params.get("page", [""])[0]
+            return self._send(200, json.dumps({"items": load_removed(key)}), "application/json", extra_headers=extra_headers)
+
         if path.startswith("/docs/"):
             did = path[len("/docs/"):].strip("/")
             doc = get_research_doc(did)
@@ -1433,6 +2026,71 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
 
         if not _check_auth(self):
             return self._401()
+
+        # ── annotation / review layer endpoints (form-encoded) ──
+        if path in ("/anno-feedback-add", "/anno-feedback-remove", "/anno-removed-add", "/anno-removed-undo"):
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length).decode("utf-8") if length else ""
+            form = urllib.parse.parse_qs(raw, keep_blank_values=True)
+            f = lambda name: form.get(name, [""])[0]
+
+            if path == "/anno-feedback-add":
+                page = f("page").strip()
+                selection = f("text")
+                comment = f("comment").strip()
+                if not comment and not selection.strip():
+                    return self._send(400, json.dumps({"ok": False, "error": "empty feedback"}), "application/json")
+                rec = {
+                    "id": new_anno_id(),
+                    "ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "kind": "selection",
+                    "srckey": f("srckey").strip(),
+                    "srclabel": f("srclabel").strip(),
+                    "selection": selection,
+                    "text": comment,
+                    "gstart": _to_int(f("gstart")),
+                    "gend": _to_int(f("gend")),
+                }
+                with _anno_lock, open(annotation_path(page), "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(rec) + "\n")
+                print(f"  [annotation] {page}/{rec['srclabel']}: {comment[:60]!r}")
+                return self._send(200, json.dumps({"ok": True, "id": rec["id"]}), "application/json")
+
+            if path == "/anno-feedback-remove":
+                page = f("page").strip()
+                rid = f("id").strip()
+                if not rid:
+                    return self._send(400, json.dumps({"ok": False, "error": "missing id"}), "application/json")
+                removed = remove_annotation(page, rid)
+                return self._send(200, json.dumps({"ok": removed > 0, "removed": removed}), "application/json")
+
+            if path == "/anno-removed-add":
+                page = f("page").strip()
+                i = f("id").strip()
+                text = f("text")
+                if not i or not text.strip():
+                    return self._send(400, json.dumps({"ok": False, "error": "missing id or text"}), "application/json")
+                item = {
+                    "id": i,
+                    "srckey": f("srckey").strip(),
+                    "srclabel": f("srclabel").strip(),
+                    "text": text,
+                    "gstart": _to_int(f("gstart")),
+                    "gend": _to_int(f("gend")),
+                    "reason": f("reason"),
+                }
+                ev = _append_removed_event(page, {"op": "add", **item})
+                item["ts"] = ev["ts"]
+                print(f"  [removed] {page}/{item['srclabel']}: {text[:60]!r}")
+                return self._send(200, json.dumps(item), "application/json")
+
+            if path == "/anno-removed-undo":
+                page = f("page").strip()
+                i = f("id").strip()
+                if not i:
+                    return self._send(400, json.dumps({"ok": False, "error": "missing id"}), "application/json")
+                _append_removed_event(page, {"op": "remove", "id": i})
+                return self._send(200, json.dumps({"ok": True}), "application/json")
 
         if path != "/submit":
             return self._send(404, json.dumps({"ok": False, "error": "not found"}), "application/json")
