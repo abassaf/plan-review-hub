@@ -54,9 +54,9 @@ metadata.
 
 2. **Start the hub:**
    ```bash
-   python3 scripts/serve.py --plans plans
+   python3 skills/plan-review-hub/scripts/serve.py --plans plans
    # or
-   node scripts/serve.mjs --plans plans
+   node skills/plan-review-hub/scripts/serve.mjs --plans plans
    ```
    Open the printed URL in your browser.
 
@@ -69,19 +69,19 @@ metadata.
 
 ## Try the examples
 
-The `examples/plans/` directory contains 3 realistic plans (API versioning, dark mode,
+The `skills/plan-review-hub/examples/plans/` directory contains 3 realistic plans (API versioning, dark mode,
 rate limiting) that render out-of-the-box:
 
 ```bash
-python3 scripts/serve.py --plans examples/plans --port 8770
+python3 skills/plan-review-hub/scripts/serve.py --plans skills/plan-review-hub/examples/plans --port 8770
 # open http://localhost:8770/
 ```
 
-The `examples/audits/` directory contains a sample findings audit that renders at
+The `skills/plan-review-hub/examples/audits/` directory contains a sample findings audit that renders at
 `/audit/<id>`:
 
 ```bash
-python3 scripts/serve.py --audits examples/audits --port 8770
+python3 skills/plan-review-hub/scripts/serve.py --audits skills/plan-review-hub/examples/audits --port 8770
 # open http://localhost:8770/audit/operator-precedence-sweep
 ```
 
@@ -168,10 +168,10 @@ All colours and typography are CSS custom properties in `assets/themes/default.c
 To re-skin the hub, copy the file, change the token values, and pass `--theme`:
 
 ```bash
-python3 scripts/serve.py --theme path/to/my-theme.css
+python3 skills/plan-review-hub/scripts/serve.py --theme path/to/my-theme.css
 ```
 
-See `assets/themes/README.md` for a description of every token.
+See `skills/plan-review-hub/assets/themes/README.md` for a description of every token.
 
 ## State
 
@@ -204,7 +204,7 @@ Update `progress.json` manually or have the implementing agent update it as plan
 Run the repository-local validation script before publishing skill changes:
 
 ```bash
-python3 scripts/validate_skill.py --smoke
+python3 skills/plan-review-hub/scripts/validate_skill.py --smoke
 ```
 
 The validator checks skill metadata, Codex UI metadata, JSON plan files, server syntax, and
