@@ -756,6 +756,37 @@ def remove_annotation(key, rid):
     return removed
 
 
+def edit_annotation(key, rid, new_text):
+    """Edit a feedback note in place: rewrite the jsonl with the matching record's text
+    updated (mirrors remove_annotation's rewrite pattern). Returns how many were edited."""
+    p = annotation_path(key)
+    if not os.path.isfile(p):
+        return 0
+    with _anno_lock:
+        out, edited = [], 0
+        with open(p, encoding="utf-8") as fh:
+            for line in fh:
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    rec = json.loads(s)
+                except json.JSONDecodeError:
+                    out.append(s)
+                    continue
+                if _anno_id(rec) == rid:
+                    rec["text"] = new_text
+                    rec["edited_ts"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    out.append(json.dumps(rec))
+                    edited += 1
+                else:
+                    out.append(s)
+        if edited:
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(("\n".join(out) + "\n") if out else "")
+    return edited
+
+
 def _append_removed_event(key, ev):
     """Append-only event log for removed/cut passages (add / remove-undo), per page."""
     ev = dict(ev)
@@ -804,6 +835,10 @@ def load_removed(key):
                     del items[i]
                     if i in order:
                         order.remove(i)
+            elif op == "edit":
+                i = ev.get("id")
+                if i in items:
+                    items[i]["reason"] = ev.get("reason", "")
     return [items[i] for i in order if i in items]
 
 
@@ -854,13 +889,21 @@ ANNO_CSS = """
 .fb-item{background:var(--surface,#fff);border:1px solid var(--blue-bg,#dbe7f2);border-radius:10px;padding:10px 12px;margin-bottom:10px}
 .fb-item .fi-top{display:flex;gap:8px;align-items:center;margin-bottom:5px}
 .fb-item .fi-src{font-size:10.5px;font-weight:700;color:var(--blue,#0a66c2);text-transform:uppercase;letter-spacing:.04em}
-.fb-item .fi-remove{margin-left:auto;background:none;border:0;color:var(--red,#9a3b2e);font:600 15px/1 inherit;cursor:pointer}
+.fb-item .fi-remove{background:none;border:0;color:var(--red,#9a3b2e);font:600 15px/1 inherit;cursor:pointer}
+.fb-item .fi-actions,.cut-item .ci-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+.fb-item .fi-edit,.cut-item .ci-edit{background:none;border:0;color:var(--blue,#0a66c2);font:600 12px/1 inherit;cursor:pointer}
+.fb-item .fi-edit:hover,.cut-item .ci-edit:hover{text-decoration:underline}
+.anno-editwrap{margin-top:4px}
+.anno-edit{width:100%;min-height:54px;border:1px solid var(--line,#d9d4c8);border-radius:8px;padding:7px 9px;font:13px/1.45 inherit;background:var(--surface,#fff);color:var(--ink-900,#1d1c1a);resize:vertical;box-sizing:border-box}
+.anno-edit-row{display:flex;gap:8px;margin-top:6px}
+.anno-edit-save{background:var(--blue,#0a66c2);color:#fff;border:0;border-radius:6px;padding:5px 13px;font:600 12px/1 inherit;cursor:pointer}
+.anno-edit-cancel{background:none;border:1px solid var(--line,#d9d4c8);border-radius:6px;padding:5px 11px;font:600 12px/1 inherit;cursor:pointer;color:var(--ink-500,#6b6862)}
 .fb-item .fi-sel{border-left:3px solid var(--blue,#9ec5ef);padding-left:8px;color:var(--ink-500,#55524c);font-style:italic;font-size:12.5px;margin:0 0 5px;white-space:pre-wrap}
 .fb-item .fi-note{font-size:13.5px;color:var(--ink-900,#1d1c1a);white-space:pre-wrap}
 .cut-item{background:var(--surface,#fff);border:1px solid var(--red-bg,#efd6d2);border-radius:10px;padding:10px 12px;margin-bottom:10px}
 .cut-item .ci-top{display:flex;gap:8px;align-items:center;margin-bottom:6px}
 .cut-item .ci-src{font-size:10.5px;font-weight:700;color:var(--red,#9a3b2e);text-transform:uppercase;letter-spacing:.04em}
-.cut-item .ci-undo{margin-left:auto;background:none;border:0;color:var(--red,#9a3b2e);font:600 12px/1 inherit;cursor:pointer}
+.cut-item .ci-undo{background:none;border:0;color:var(--red,#9a3b2e);font:600 12px/1 inherit;cursor:pointer}
 .cut-item .ci-text{margin:0 0 6px;padding-left:10px;border-left:3px solid var(--red,#e07a70);color:var(--ink-900,#1d1c1a);font-size:13.5px;line-height:1.45;white-space:pre-wrap;text-decoration:line-through;text-decoration-color:var(--red,#d6a5a0)}
 .cut-item .ci-reason{font-size:12.5px;color:var(--ink-500,#6b6862)}
 """
@@ -1086,17 +1129,67 @@ ANNO_SCRIPT = """
     });
   }
 
+  // ---- edit-in-place helpers (shared by feedback notes and removed reasons) ----
+  function updateAnnoNote(id, note){
+    document.querySelectorAll('[data-anno-id="'+id+'"]').forEach(function(sp){ sp.setAttribute('data-anno-note', note||''); });
+  }
+  function buildEditor(current, onSave, onCancel){
+    var wrap=el('div','anno-editwrap');
+    var ta=el('textarea','anno-edit'); ta.value=current||'';
+    var row=el('div','anno-edit-row');
+    var save=el('button','anno-edit-save'); save.type='button'; save.textContent='Save';
+    var cancel=el('button','anno-edit-cancel'); cancel.type='button'; cancel.textContent='Cancel';
+    save.addEventListener('click', function(){ onSave(ta.value); });
+    cancel.addEventListener('click', function(){ onCancel(); });
+    ta.addEventListener('keydown', function(e){
+      if((e.metaKey||e.ctrlKey) && (e.key==='Enter'||e.keyCode===13)){ e.preventDefault(); onSave(ta.value); }
+      else if(e.key==='Escape'){ e.preventDefault(); onCancel(); }
+    });
+    row.appendChild(save); row.appendChild(cancel);
+    wrap.appendChild(ta); wrap.appendChild(row);
+    setTimeout(function(){ ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 0);
+    return wrap;
+  }
+  function editFeedback(id, newText){
+    var page=document.body.getAttribute('data-page')||'';
+    post('/anno-feedback-edit', {page:page, id:id, text:newText}).then(function(r){ return r.json(); }).then(function(res){
+      if(res&&res.ok){
+        state.feedback.forEach(function(x){ if(x.id===id){ x.text=newText; delete x._editing; } });
+        updateAnnoNote(id, newText); renderFeedbackList();
+      }
+    }).catch(function(){});
+  }
+  function editCut(id, newReason){
+    var page=document.body.getAttribute('data-page')||'';
+    post('/anno-removed-edit', {page:page, id:id, reason:newReason}).then(function(r){ return r.json(); }).then(function(res){
+      if(res&&res.ok){
+        state.removed.forEach(function(x){ if(x.id===id){ x.reason=newReason; delete x._editing; } });
+        updateAnnoNote(id, newReason); renderRemoved();
+      }
+    }).catch(function(){});
+  }
+
   // ---- removed / cut panel rendering ----
   function buildCutItem(item){
     var it=el('div','cut-item'); it.setAttribute('data-id', item.id);
     var top=el('div','ci-top');
     var src=el('span','ci-src'); src.textContent=item.srclabel||item.srckey||'source';
+    top.appendChild(src);
+    var acts=el('span','ci-actions');
+    var ed=el('button','ci-edit'); ed.type='button'; ed.textContent='Edit'; ed.title='Edit the reason';
+    ed.addEventListener('click', function(){ item._editing=true; renderRemoved(); });
     var undo=el('button','ci-undo'); undo.type='button'; undo.textContent='Undo';
     undo.addEventListener('click', function(){ undoCut(item.id); });
-    top.appendChild(src); top.appendChild(undo);
+    acts.appendChild(ed); acts.appendChild(undo); top.appendChild(acts);
     var tx=el('div','ci-text'); tx.textContent=item.text;
     it.appendChild(top); it.appendChild(tx);
-    if(item.reason){ var rs=el('div','ci-reason'); rs.textContent='Reason: '+item.reason; it.appendChild(rs); }
+    if(item._editing){
+      it.appendChild(buildEditor(item.reason||'',
+        function(val){ editCut(item.id, val); },
+        function(){ delete item._editing; renderRemoved(); }));
+    } else if(item.reason){
+      var rs=el('div','ci-reason'); rs.textContent='Reason: '+item.reason; it.appendChild(rs);
+    }
     return it;
   }
   function renderRemoved(){
@@ -1123,12 +1216,22 @@ ANNO_SCRIPT = """
     var it=el('div','fb-item'); it.setAttribute('data-id', item.id);
     var top=el('div','fi-top');
     var src=el('span','fi-src'); src.textContent=item.srclabel||item.srckey||'general';
+    top.appendChild(src);
+    var acts=el('span','fi-actions');
+    var ed=el('button','fi-edit'); ed.type='button'; ed.textContent='Edit'; ed.title='Edit this note';
+    ed.addEventListener('click', function(){ item._editing=true; renderFeedbackList(); });
     var rm=el('button','fi-remove'); rm.type='button'; rm.textContent='\\u00d7'; rm.title='Remove this feedback';
     rm.addEventListener('click', function(){ removeFeedback(item.id); });
-    top.appendChild(src); top.appendChild(rm);
+    acts.appendChild(ed); acts.appendChild(rm); top.appendChild(acts);
     it.appendChild(top);
     if(item.selection){ var sl=el('div','fi-sel'); sl.textContent=item.selection; it.appendChild(sl); }
-    var nt=el('div','fi-note'); nt.textContent=item.text||'(no note)'; it.appendChild(nt);
+    if(item._editing){
+      it.appendChild(buildEditor(item.text||'',
+        function(val){ editFeedback(item.id, val); },
+        function(){ delete item._editing; renderFeedbackList(); }));
+    } else {
+      var nt=el('div','fi-note'); nt.textContent=item.text||'(no note)'; it.appendChild(nt);
+    }
     return it;
   }
   function renderFeedbackList(){
@@ -2028,7 +2131,8 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             return self._401()
 
         # ── annotation / review layer endpoints (form-encoded) ──
-        if path in ("/anno-feedback-add", "/anno-feedback-remove", "/anno-removed-add", "/anno-removed-undo"):
+        if path in ("/anno-feedback-add", "/anno-feedback-remove", "/anno-feedback-edit",
+                    "/anno-removed-add", "/anno-removed-undo", "/anno-removed-edit"):
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length).decode("utf-8") if length else ""
             form = urllib.parse.parse_qs(raw, keep_blank_values=True)
@@ -2064,6 +2168,16 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
                 removed = remove_annotation(page, rid)
                 return self._send(200, json.dumps({"ok": removed > 0, "removed": removed}), "application/json")
 
+            if path == "/anno-feedback-edit":
+                page = f("page").strip()
+                rid = f("id").strip()
+                text = f("text")
+                if not rid:
+                    return self._send(400, json.dumps({"ok": False, "error": "missing id"}), "application/json")
+                edited = edit_annotation(page, rid, text)
+                print(f"  [annotation-edit] {page}/{rid}: {text[:60]!r}")
+                return self._send(200, json.dumps({"ok": edited > 0, "edited": edited}), "application/json")
+
             if path == "/anno-removed-add":
                 page = f("page").strip()
                 i = f("id").strip()
@@ -2090,6 +2204,15 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
                 if not i:
                     return self._send(400, json.dumps({"ok": False, "error": "missing id"}), "application/json")
                 _append_removed_event(page, {"op": "remove", "id": i})
+                return self._send(200, json.dumps({"ok": True}), "application/json")
+
+            if path == "/anno-removed-edit":
+                page = f("page").strip()
+                i = f("id").strip()
+                if not i:
+                    return self._send(400, json.dumps({"ok": False, "error": "missing id"}), "application/json")
+                _append_removed_event(page, {"op": "edit", "id": i, "reason": f("reason")})
+                print(f"  [removed-edit] {page}/{i}: {f('reason')[:60]!r}")
                 return self._send(200, json.dumps({"ok": True}), "application/json")
 
         if path != "/submit":
