@@ -1061,8 +1061,15 @@ ANNO_SCRIPT = """
     showPop(range.getBoundingClientRect());
   });
   document.addEventListener('keydown', function(e){
-    if(e.key==='Escape'){ hidePop(); return; }
-    if(!POP || POP.hasAttribute('hidden') || !POP.contains(e.target)){ return; }
+    if(e.key==='Escape'){ if(POP && !POP.hasAttribute('hidden')){ hidePop(); } return; }
+    // Fire the popup shortcuts whenever the popup is open with a live selection (snap),
+    // even if focus is still on the selection in the page rather than inside the popup.
+    // (Previously this required focus inside the popup, so Cmd/Ctrl+Delete/Backspace only
+    // worked after clicking the comment box - which feedback does and remove usually doesn't.)
+    if(!POP || POP.hasAttribute('hidden') || !snap){ return; }
+    // ...but don't steal the combo from other text fields (page feedback form, in-place editor).
+    var _t = e.target;
+    if(_t && _t !== COMMENT && (_t.tagName === 'TEXTAREA' || _t.tagName === 'INPUT' || _t.isContentEditable)){ return; }
     var mod = e.metaKey||e.ctrlKey;
     // Cmd/Ctrl+Enter = feedback (blue tick). Cmd/Ctrl+Delete or +Backspace = remove (red cross).
     if(mod && (e.key==='Enter'||e.keyCode===13)){ e.preventDefault(); if(FB){ FB.click(); } return; }
