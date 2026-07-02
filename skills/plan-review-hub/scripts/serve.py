@@ -916,7 +916,7 @@ def annotation_ui_html():
   <textarea class="kp-comment" placeholder="Feedback..."></textarea>
   <div class="kp-row">
     <button type="button" class="kp-feedback" title="Submit feedback (Cmd/Ctrl+Enter)">&#10003;</button>
-    <button type="button" class="kp-remove" title="Mark as removed/cut (Cmd/Ctrl+Delete)">&times;</button>
+    <button type="button" class="kp-remove" title="Mark as removed/cut (Cmd+Option+Delete)">&times;</button>
   </div>
   <div class="kp-notice" hidden></div>
 </div>
@@ -1071,9 +1071,11 @@ ANNO_SCRIPT = """
     var _t = e.target;
     if(_t && _t !== COMMENT && (_t.tagName === 'TEXTAREA' || _t.tagName === 'INPUT' || _t.isContentEditable)){ return; }
     var mod = e.metaKey||e.ctrlKey;
-    // Cmd/Ctrl+Enter = feedback (blue tick). Cmd/Ctrl+Delete or +Backspace = remove (red cross).
+    // Cmd/Ctrl+Enter = feedback (blue tick). Cmd+Option+Delete/Backspace (meta+alt) = remove
+    // (red cross). Plain Cmd/Ctrl+Delete/Backspace is deliberately NOT captured, so it stays
+    // free to clear a line in the comment textarea.
     if(mod && (e.key==='Enter'||e.keyCode===13)){ e.preventDefault(); if(FB){ FB.click(); } return; }
-    if(mod && (e.key==='Delete'||e.key==='Backspace'||e.keyCode===46||e.keyCode===8)){ e.preventDefault(); if(FEEDBACK_ONLY){ return; } if(RM){ RM.click(); } return; }
+    if(mod && e.altKey && (e.key==='Delete'||e.key==='Backspace'||e.keyCode===46||e.keyCode===8)){ e.preventDefault(); if(FEEDBACK_ONLY){ return; } if(RM){ RM.click(); } return; }
   });
   function showNotice(msg){ if(!NOTICE){ return; } NOTICE.textContent=msg; NOTICE.removeAttribute('hidden'); }
   function hideNotice(){ if(!NOTICE){ return; } NOTICE.textContent=''; NOTICE.setAttribute('hidden',''); }
