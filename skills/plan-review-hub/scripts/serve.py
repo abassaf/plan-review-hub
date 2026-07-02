@@ -906,6 +906,44 @@ ANNO_CSS = """
 .cut-item .ci-undo{background:none;border:0;color:var(--red,#9a3b2e);font:600 12px/1 inherit;cursor:pointer}
 .cut-item .ci-text{margin:0 0 6px;padding-left:10px;border-left:3px solid var(--red,#e07a70);color:var(--ink-900,#1d1c1a);font-size:13.5px;line-height:1.45;white-space:pre-wrap;text-decoration:line-through;text-decoration-color:var(--red,#d6a5a0)}
 .cut-item .ci-reason{font-size:12.5px;color:var(--ink-500,#6b6862)}
+
+/* ============ MOBILE (touch, <=640px) feedback support. Desktop rules unchanged. ============ */
+@media (max-width:640px){
+  /* prevent horizontal overflow; wrap long words + URLs in the reviewable content */
+  html,body{max-width:100%;overflow-x:hidden}
+  .wrap,.two-col,.main-col,.anno-content,.prose,.card,.fb-item,.cut-item{max-width:100%}
+  .anno-content,.prose,.prose p,.prose li,.fi-note,.fi-sel,.ci-text,.ci-reason{overflow-wrap:anywhere;word-break:break-word}
+  /* 16px inputs so iOS does not auto-zoom on focus */
+  textarea,input{font-size:16px}
+
+  /* Selection popup -> full-width bar pinned near the bottom, big tap targets */
+  .keep-pop{position:fixed;left:8px;right:8px;bottom:10px;top:auto !important;width:auto;max-width:none;
+    padding:11px;border-radius:14px;box-shadow:0 -6px 30px rgba(0,0,0,.3)}
+  .keep-pop textarea{min-height:54px;font-size:16px;padding:9px 11px}
+  .keep-pop .kp-row{gap:10px;margin-top:9px}
+  .keep-pop .kp-feedback,.keep-pop .kp-remove{min-height:50px;min-width:60px;font-size:22px;flex:1}
+  .keep-pop .kp-cancel{min-width:46px;min-height:46px;font-size:24px}
+
+  /* FAB toggle - bigger, thumb-reachable */
+  .keep-toggle{right:14px;bottom:14px;padding:13px 18px;font-size:15px;min-height:48px;box-shadow:0 6px 22px rgba(0,0,0,.3)}
+  .keep-toggle .keep-count{min-width:22px;height:22px;font-size:12px}
+
+  /* Feedback/Removed panel -> full-width bottom sheet */
+  .keep-tray{top:auto;right:0;left:0;bottom:0;width:100%;max-width:100%;height:82vh;max-height:86vh;
+    border-left:0;border-top:1px solid var(--line,#e4e1d9);border-radius:16px 16px 0 0;box-shadow:0 -12px 40px rgba(0,0,0,.24)}
+  .keep-tray-head{padding:14px 16px}
+  .keep-tray-head .keep-tray-close{min-width:44px;min-height:44px;font-size:26px}
+  .keep-tray-actions{padding:10px 14px}
+  .anno-tabs{padding:8px 12px 0}
+  .anno-tab{min-height:44px;font-size:13.5px}
+  .fb-list,.cut-list{padding:12px}
+  .fb-item,.cut-item{padding:12px 12px}
+  /* per-item controls: bigger hit areas */
+  .fb-item .fi-edit,.cut-item .ci-edit,.fb-item .fi-remove,.cut-item .ci-undo{padding:6px 10px;font-size:14px}
+  .anno-edit{min-height:64px;font-size:16px}
+  .anno-edit-save,.anno-edit-cancel{min-height:40px}
+  .anno-tip{max-width:80vw}
+}
 """
 
 
@@ -1036,16 +1074,28 @@ ANNO_SCRIPT = """
 
   // ---- floating popup ----
   function hidePop(){ POP.setAttribute('hidden',''); snap=null; hideNotice(); }
+  function isMobile(){ return !!(window.matchMedia && window.matchMedia('(max-width:640px)').matches); }
   function showPop(rect){
     POP.removeAttribute('hidden');
     COMMENT.value=''; COMMENT.placeholder='Feedback...'; hideNotice();
+    if(isMobile()){
+      // On phones the popup is a fixed full-width bar pinned near the bottom (see mobile CSS);
+      // clear any desktop inline position so it can never land off the top/edge of the screen.
+      POP.style.top=''; POP.style.left='';
+      return;
+    }
     var top=rect.bottom+window.scrollY+8, left=rect.left+window.scrollX;
     var maxL=window.scrollX+document.documentElement.clientWidth-POP.offsetWidth-10;
     if(left>maxL){ left=maxL; } if(left<window.scrollX+8){ left=window.scrollX+8; }
     POP.style.top=top+'px'; POP.style.left=left+'px';
   }
-  document.addEventListener('mouseup', function(e){
-    if(POP.contains(e.target)){ return; }
+  // Shared selection -> popup logic. Desktop fires on mouseup; touch selects via long-press +
+  // drag handles (may not emit mouseup), so we also react to touchend and a debounced
+  // selectionchange so the popup reliably appears on phones.
+  function evaluateSelection(evTarget){
+    if(evTarget && POP.contains(evTarget)){ return; }
+    var ae=document.activeElement;
+    if(ae && ae.closest && (ae.closest('#keep-pop') || ae.closest('#cut-tray'))){ return; }
     var sel=window.getSelection();
     if(!sel||sel.isCollapsed||!sel.rangeCount){ hidePop(); return; }
     var range=sel.getRangeAt(0), c=nearestContainer(range.commonAncestorContainer);
@@ -1058,7 +1108,19 @@ ANNO_SCRIPT = """
     snap={srckey:c.getAttribute('data-srckey'),
           srclabel:c.getAttribute('data-srclabel')||c.getAttribute('data-srckey'),
           gstart:a, gend:b, text:text};
-    showPop(range.getBoundingClientRect());
+    var r; try{ r=range.getBoundingClientRect(); }catch(err){ r={bottom:0,left:0}; }
+    showPop(r);
+  }
+  document.addEventListener('mouseup', function(e){ evaluateSelection(e.target); });
+  document.addEventListener('touchend', function(e){ setTimeout(function(){ evaluateSelection(e.target); }, 60); });
+  var _selTimer=null;
+  document.addEventListener('selectionchange', function(){
+    clearTimeout(_selTimer);
+    _selTimer=setTimeout(function(){
+      var sel=window.getSelection();
+      if(!sel||sel.isCollapsed||!sel.rangeCount){ return; }
+      if(nearestContainer(sel.getRangeAt(0).commonAncestorContainer)){ evaluateSelection(null); }
+    }, 350);
   });
   document.addEventListener('keydown', function(e){
     if(e.key==='Escape'){ if(POP && !POP.hasAttribute('hidden')){ hidePop(); } return; }
@@ -1309,6 +1371,16 @@ ANNO_SCRIPT = """
       var sig=a.map(function(x){ return x.kind+':'+x.note; }).join('|');
       if(sig!==tipSig){ buildTip(a); tipSig=sig; }
       positionTip(e.clientX, e.clientY);
+    });
+    // Touch equivalent (no hover on phones): tap a highlight to reveal its note; tap
+    // elsewhere to dismiss. Notes are also always visible in the Feedback/Removed panel.
+    document.addEventListener('click', function(e){
+      var a=annosAt(e.target);
+      if(a.length){
+        buildTip(a); tipSig=a.map(function(x){ return x.kind+':'+x.note; }).join('|');
+        var rc=(e.target.getBoundingClientRect ? e.target.getBoundingClientRect() : {left:(e.clientX||0),bottom:(e.clientY||0)});
+        positionTip(rc.left||e.clientX||0, rc.bottom||e.clientY||0);
+      } else if(tipSig){ TIP.setAttribute('hidden',''); tipSig=''; }
     });
   }
 
