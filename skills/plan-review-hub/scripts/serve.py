@@ -215,9 +215,21 @@ def inline_md(s, links=True):
     s = re.sub(r"(?<!\*)\*(?!\*)(?=\S)([^*\n]+?)(?<=\S)\*(?!\*)", r"<em>\1</em>", s)
     # markdown links [text](url)
     if links:
-        s = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', s)
+        # absolute http/https links — open in a new tab
+        s = re.sub(
+            r"\[([^\]]+)\]\((https?://[^)]+)\)",
+            r'<a href="\2" target="_blank" rel="noopener">\1</a>',
+            s,
+        )
+        # relative paths and file:// links — local resources, open in the same tab
+        s = re.sub(
+            r"\[([^\]]+)\]\(((?!https?://)[^)]+)\)",
+            r'<a href="\2">\1</a>',
+            s,
+        )
     else:
-        s = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1", s)
+        # collapse any [text](url) — absolute or relative — to just the link text
+        s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
     return s
 
 
