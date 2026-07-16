@@ -110,8 +110,110 @@ def _infer_title_tagline(text):
     return title or "Untitled plan", tagline
 
 
-def load_plans():
-    """Return ordered list of plan dicts based on source setting."""
+# ─── nested hubs ───────────────────────────────────────────────────────────────
+# A plan entry is a SUB-HUB when its directory itself contains a `plans/` subtree:
+#
+#   plans/<leaf>/plan.json            -> leaf plan   (flat mode, unchanged)
+#   plans/<sub>/plans/<leaf>/...      -> sub-hub containing its own plans
+#   plans/<sub>/plan.json             -> optional metadata (title/tagline) for the sub-hub
+#
+# This recurses to arbitrary depth. A hub level is addressed by its tuple of
+# directory segments: () is the root hub, ("a","b") is plans/a/plans/b/plans.
+# Routing: /hub/<a>/<b> for a nested index, /hub/<a>/<b>/plan/<leaf> for a leaf.
+# State keys: root-level keys stay bare ids (backward compatible with existing
+# state files); nested keys are "a/b/leaf", flattened by _safe_key when written.
+
+_SEG_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def is_sub_hub_dir(pdir):
+    """True when this plan directory is itself a hub (contains a plans/ subtree)."""
+    return os.path.isdir(os.path.join(pdir, "plans"))
+
+
+def parse_hub_segments(raw):
+    """'/a/b' -> ('a','b'). Returns None if any segment is unsafe (no traversal)."""
+    segs = tuple(s for s in str(raw).strip("/").split("/") if s)
+    for s in segs:
+        if s in (".", "..") or not _SEG_RE.fullmatch(s):
+            return None
+    return segs
+
+
+def hub_plans_dir(segments):
+    """Directory holding the plans for a hub level."""
+    d = _abs(CFG["plansDir"])
+    for seg in segments:
+        d = os.path.join(d, seg, "plans")
+    return d
+
+
+def hub_exists(segments):
+    return os.path.isdir(hub_plans_dir(segments))
+
+
+def scoped_key(segments, pid):
+    """Annotation/feedback key for a plan. Root-level -> bare id (unchanged)."""
+    return "/".join(tuple(segments) + (pid,)) if segments else pid
+
+
+def split_scoped_key(key):
+    """'a/b/leaf' -> (('a','b'),'leaf'); 'leaf' -> ((),'leaf')."""
+    parts = [s for s in str(key or "").split("/") if s]
+    if not parts:
+        return None, None
+    return tuple(parts[:-1]), parts[-1]
+
+
+def hub_url(segments):
+    return "/" if not segments else "/hub/" + "/".join(segments)
+
+
+def plan_url(segments, pid):
+    return f"/plan/{pid}" if not segments else "/hub/" + "/".join(segments) + f"/plan/{pid}"
+
+
+def hub_title(segments):
+    """Display title for a hub level: the sub-hub's plan.json title, else its dir name."""
+    if not segments:
+        return CFG.get("title") or "Plan Review Hub"
+    pdir = os.path.dirname(hub_plans_dir(segments))  # strip trailing /plans
+    pjson = os.path.join(pdir, "plan.json")
+    if os.path.isfile(pjson):
+        try:
+            with open(pjson) as f:
+                t = (json.load(f) or {}).get("title")
+            if t:
+                return t
+        except Exception:
+            pass
+    return segments[-1].replace("-", " ").title()
+
+
+def hub_crumbs(segments, leaf_label=None):
+    """Breadcrumb trail: Root > Sub > ... (each level clickable), optional leaf label."""
+    root_label = html.escape(CFG.get("title") or "Hub")
+    parts = [f"<a href='/'>{root_label}</a>"]
+    for i in range(1, len(segments) + 1):
+        seg = segments[:i]
+        label = html.escape(hub_title(seg))
+        if i == len(segments) and leaf_label is None:
+            parts.append(f"<span>{label}</span>")
+        else:
+            parts.append(f"<a href='{html.escape(hub_url(seg))}'>{label}</a>")
+    if leaf_label is not None:
+        parts.append(f"<span>{html.escape(leaf_label)}</span>")
+    return " &rsaquo; ".join(parts)
+
+
+def load_plans(segments=()):
+    """Return ordered list of plan dicts for a hub level.
+
+    segments=() is the root hub and preserves the original source/auto behaviour.
+    Nested levels are always generic-style (<plansDir>/<seg>/plans/<id>/)."""
+    if segments:
+        return _load_generic(hub_plans_dir(segments))
+
     source = CFG["source"]
     plans_dir = _abs(CFG["plansDir"])
     openspec_dir = os.path.join(REPO, "openspec", "changes")
@@ -130,20 +232,34 @@ def load_plans():
 
 
 def _load_generic(plans_dir):
-    """Load plans from <plansDir>/<id>/plan.json subdirectories."""
+    """Load plans from <plansDir>/<id>/plan.json subdirectories.
+
+    A subdirectory that contains its own plans/ subtree is loaded as a SUB-HUB
+    (marked _is_hub) even when it has no plan.json; plan.json remains optional
+    metadata for it. Leaf loading is unchanged."""
     if not os.path.isdir(plans_dir):
         return []
     plans = []
     for name in sorted(os.listdir(plans_dir)):
         pdir = os.path.join(plans_dir, name)
+        if not os.path.isdir(pdir):
+            continue
         pjson = os.path.join(pdir, "plan.json")
-        if not os.path.isdir(pdir) or not os.path.isfile(pjson):
+        is_hub = is_sub_hub_dir(pdir)
+        has_json = os.path.isfile(pjson)
+        if not has_json and not is_hub:
             continue
-        try:
-            with open(pjson) as f:
-                p = json.load(f)
-        except Exception:
-            continue
+        p = {}
+        if has_json:
+            try:
+                with open(pjson) as f:
+                    p = json.load(f)
+            except Exception:
+                # a leaf with unreadable plan.json is skipped (as before); a sub-hub
+                # still renders using defaults so the level stays navigable
+                if not is_hub:
+                    continue
+                p = {}
         p.setdefault("id", name)
         p.setdefault("num", f"{len(plans)+1:02d}")
         p.setdefault("title", name.replace("-", " ").title())
@@ -155,8 +271,24 @@ def _load_generic(plans_dir):
         p.setdefault("docs", [])
         p.setdefault("decisions", [])
         p["_dir"] = pdir
+        p["_is_hub"] = is_hub
+        if is_hub:
+            p["_child_count"] = _count_children(pdir)
         plans.append(p)
     return plans
+
+
+def _count_children(pdir):
+    """How many plan entries a sub-hub directly contains (for the index subtitle)."""
+    sub = os.path.join(pdir, "plans")
+    if not os.path.isdir(sub):
+        return 0
+    n = 0
+    for name in sorted(os.listdir(sub)):
+        d = os.path.join(sub, name)
+        if os.path.isdir(d) and (os.path.isfile(os.path.join(d, "plan.json")) or is_sub_hub_dir(d)):
+            n += 1
+    return n
 
 
 def _load_openspec(changes_dir):
@@ -420,8 +552,16 @@ def feedback_dir():
     return d
 
 
+def feedback_file_path(key):
+    """Feedback file for a plan key. A bare root-level id keeps its exact original
+    filename (backward compatible); a nested 'a/b/leaf' key is flattened safely."""
+    k = str(key or "")
+    name = k if "/" not in k else _safe_key(k)
+    return os.path.join(feedback_dir(), f"{name}.json")
+
+
 def get_feedback(plan_id):
-    path = os.path.join(feedback_dir(), f"{plan_id}.json")
+    path = feedback_file_path(plan_id)
     if not os.path.isfile(path):
         return None
     try:
@@ -927,6 +1067,8 @@ ANNO_CSS = """
   .anno-content,.prose,.prose p,.prose li,.fi-note,.fi-sel,.ci-text,.ci-reason{overflow-wrap:anywhere;word-break:break-word}
   /* 16px inputs so iOS does not auto-zoom on focus */
   textarea,input{font-size:16px}
+  /* keep the per-decision note compact on mobile, but >=16px so iOS does not zoom */
+  textarea.dec-note{font-size:16px;padding:10px;min-height:44px}
 
   /* Selection popup -> full-width bar pinned near the bottom, big tap targets */
   .keep-pop{position:fixed;left:8px;right:8px;bottom:10px;top:auto !important;width:auto;max-width:none;
@@ -1522,6 +1664,11 @@ details.spec-section>summary:hover{{text-decoration:underline}}
 .verdict-grid{{display:grid;grid-template-columns:1fr 1fr;gap:7px}}
 textarea{{width:100%;min-height:110px;border:1px solid var(--line);border-radius:var(--radius);padding:11px;font-family:var(--font-body);font-size:13.5px;resize:vertical;color:var(--ink-900)}}
 textarea:focus{{outline:2px solid var(--accent);border-color:transparent}}
+/* optional per-decision note: sits under its radio group, visually subordinate to it */
+textarea.dec-note{{min-height:0;height:auto;margin:2px 0 4px;padding:8px 10px;font-size:12.5px;
+  background:var(--surface-warm,transparent);border-style:dashed;color:var(--ink-700)}}
+textarea.dec-note::placeholder{{color:var(--ink-500);opacity:.85}}
+textarea.dec-note:focus{{border-style:solid;background:var(--surface)}}
 .field-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}}
 @media(max-width:540px){{.field-row{{grid-template-columns:1fr}}}}
 .field-row input{{width:100%;border:1px solid var(--line);border-radius:var(--radius);padding:9px 11px;font-family:var(--font-body);font-size:13.5px;color:var(--ink-900)}}
@@ -1599,13 +1746,28 @@ textarea:focus{{outline:2px solid var(--accent);border-color:transparent}}
 
 # ─── page renderers ────────────────────────────────────────────────────────────
 
-def render_index(plans, theme_css):
+def render_index(plans, theme_css, segments=()):
+    """Hub index for a level. segments=() is the root hub (unchanged flat behaviour);
+    a non-empty tuple renders that sub-hub's own isolated list."""
     progress = get_progress()
-    total = len(plans)
-    decided = sum(1 for p in plans if get_feedback(p["id"]))
+    leaves = [p for p in plans if not p.get("_is_hub")]
+    subhubs = [p for p in plans if p.get("_is_hub")]
+    total = len(leaves)
+    decided = sum(1 for p in leaves if get_feedback(scoped_key(segments, p["id"])))
     done_count = sum(1 for pid, pr in progress.items() if pr.get("state") in ("done", "done_merged"))
+    this_title = hub_title(segments)
 
     if not plans:
+        if segments:
+            body = f"""
+<div class='wrap'>
+  <div class='empty-state'>
+    <h2>No plans in this sub-hub</h2>
+    <p>Add plan subfolders under <code>{html.escape(os.path.relpath(hub_plans_dir(segments), _abs(CFG['plansDir'])))}/</code> inside the plans directory.</p>
+    <p><a href='{html.escape(hub_url(segments[:-1]))}'>&larr; Back up a level</a></p>
+  </div>
+</div>"""
+            return page_shell(f"{this_title} — Plan Review Hub", hub_crumbs(segments), body, theme_css)
         body = """
 <div class='wrap'>
   <div class='empty-state'>
@@ -1620,14 +1782,31 @@ def render_index(plans, theme_css):
     rows = []
     for p in plans:
         pid = p["id"]
-        fb = get_feedback(pid) or {}
+        key = scoped_key(segments, pid)
+
+        # a sub-hub is a level, not a reviewable plan: it drills down instead
+        if p.get("_is_hub"):
+            n = p.get("_child_count", 0)
+            sub = f"{n} sub-plan{'s' if n != 1 else ''}" if n else "empty"
+            rows.append(f"""
+<a class='index-row' href='{html.escape(hub_url(segments + (pid,)))}'>
+  <div class='num'>&#128193;</div>
+  <div class='body'>
+    <h3>{html.escape(p['title'])}<span style='font-size:11.5px;color:var(--ink-500);margin-left:8px'>sub-hub</span></h3>
+    <p>{html.escape(p['tagline'] or p.get('headline') or '')}</p>
+  </div>
+  <div class='aside'><div style='font-size:11px;color:var(--ink-500)'>{html.escape(sub)} &rarr;</div></div>
+</a>""")
+            continue
+
+        fb = get_feedback(key) or {}
         verdict = fb.get("verdict")
         verdict_chip_html = ""
         if verdict:
             vcls, vlabel = VERDICT_CHIP.get(verdict, ("chip-none", verdict.replace("_", " ")))
             verdict_chip_html = chip(vcls, vlabel)
 
-        pr = progress.get(pid)
+        pr = progress.get(key)
         aside_html = ""
         if pr:
             state = pr.get("state", "not_started")
@@ -1643,7 +1822,7 @@ def render_index(plans, theme_css):
 
         effort_html = f"<span style='font-size:11.5px;color:var(--ink-500);margin-left:8px'>{html.escape(p['effort'])}</span>" if p.get('effort') else ""
         rows.append(f"""
-<a class='index-row' href='/plan/{html.escape(pid)}'>
+<a class='index-row' href='{html.escape(plan_url(segments, pid))}'>
   <div class='num'>{html.escape(p['num'])}</div>
   <div class='body'>
     <h3>{html.escape(p['title'])}{effort_html}</h3>
@@ -1652,10 +1831,15 @@ def render_index(plans, theme_css):
   <div class='aside'>{aside_html}</div>
 </a>""")
 
-    audits = load_audits()
+    # Audits and research docs are root-level artefacts: only surface them on the
+    # root hub so sub-hub levels stay isolated to their own plans.
+    audits = load_audits() if not segments else []
+    # only emitted when this level actually has sub-hubs, so flat renders are unchanged
+    subhub_stat = (f"\n  <div class='stat'><b>{len(subhubs)}</b> "
+                   f"Sub-hub{'s' if len(subhubs) != 1 else ''}</div>") if subhubs else ""
     stats_html = f"""
 <div class='hub-progress'>
-  <div class='stat'><b>{total}</b> Plans</div>
+  <div class='stat'><b>{total}</b> Plans</div>{subhub_stat}
   <div class='stat'><b>{decided}</b> Reviewed</div>
   <div class='stat'><b>{done_count}</b> Implemented</div>
   <div class='stat'><b>{total - done_count}</b> Remaining</div>
@@ -1682,7 +1866,7 @@ def render_index(plans, theme_css):
             + "".join(audit_rows)
         )
 
-    research_docs = load_research_docs()
+    research_docs = load_research_docs() if not segments else []
     research_section = ""
     if research_docs:
         doc_rows = []
@@ -1701,18 +1885,20 @@ def render_index(plans, theme_css):
             + "".join(doc_rows)
         )
 
-    body = f"""
-<div class='wrap'>
-  <div class='hero'>
-    <div class='eyebrow'>Planning · {total} plan{'s' if total!=1 else ''}</div>
-    <h1 class='page-title'>{html.escape(CFG.get('title') or 'Plan Review Hub')}</h1>
-    <p class='lead'>Review each plan, answer the decisions, set a verdict, and submit feedback. Approved plans will be dispatched to implementation.</p>
-  </div>
-  {stats_html}
-  {''.join(rows)}
-  {audits_section}
-  {research_section}
-  <div class='card' style='margin-top:20px'>
+    eyebrow = (
+        f"Planning · {total} plan{'s' if total!=1 else ''}"
+        + (f" · {len(subhubs)} sub-hub{'s' if len(subhubs)!=1 else ''}" if subhubs else "")
+    )
+    if segments:
+        lead = ("This sub-hub is reviewed on its own: its plans, feedback and annotations are "
+                "scoped to this level. Use the breadcrumbs to go back up.")
+        up_link = f"\n    <p style='margin-top:10px'><a href='{html.escape(hub_url(segments[:-1]))}'>&larr; Back to {html.escape(hub_title(segments[:-1]))}</a></p>"
+        how_card = ""
+    else:
+        lead = "Review each plan, answer the decisions, set a verdict, and submit feedback. Approved plans will be dispatched to implementation."
+        up_link = ""
+        # kept inline (identical bytes to the pre-nesting flat render)
+        how_card = """<div class='card' style='margin-top:20px'>
     <h2>How this works</h2>
     <p style='font-size:13.5px;color:var(--ink-700)'>
       Open a plan, read it, answer the decision questions, and submit your verdict + notes.
@@ -1722,23 +1908,43 @@ def render_index(plans, theme_css):
       and dispatch a dedicated subagent to each — nothing merges to <code>main</code> without you.
     </p>
   </div>
-  <div class='footer'>plan-review-hub · state in <code>.planning-hub/</code> · <a href='/feedback'>view raw feedback JSON</a></div>
+  """
+
+    body = f"""
+<div class='wrap'>
+  <div class='hero'>
+    <div class='eyebrow'>{eyebrow}</div>
+    <h1 class='page-title'>{html.escape(this_title)}</h1>
+    <p class='lead'>{lead}</p>{up_link}
+  </div>
+  {stats_html}
+  {''.join(rows)}
+  {audits_section}
+  {research_section}
+  {how_card}<div class='footer'>plan-review-hub · state in <code>.planning-hub/</code> · <a href='/feedback'>view raw feedback JSON</a></div>
 </div>"""
-    return page_shell("Plan Review Hub", "Hub", body, theme_css)
+    crumbs = hub_crumbs(segments) if segments else "Hub"
+    shell_title = f"{this_title} — Plan Review Hub" if segments else "Plan Review Hub"
+    return page_shell(shell_title, crumbs, body, theme_css)
 
 
-def render_plan(plan, plans, theme_css):
+def render_plan(plan, plans, theme_css, segments=()):
+    """Render a leaf plan. segments is the hub path it lives under; () = root hub,
+    which keeps the original bare-id state keys and /plan/<id> links."""
     pid = plan["id"]
+    key = scoped_key(segments, pid)
     progress = get_progress()
-    fb = get_feedback(pid) or {}
+    fb = get_feedback(key) or {}
 
-    # side nav
+    # side nav (siblings within this hub level only; sub-hubs link to their level)
     nav_items = []
     for p in plans:
         active = " active" if p["id"] == pid else ""
+        href = hub_url(segments + (p["id"],)) if p.get("_is_hub") else plan_url(segments, p["id"])
+        label = p["title"] + (" /" if p.get("_is_hub") else "")
         nav_items.append(
-            f"<a class='{active}' href='/plan/{html.escape(p['id'])}'>"
-            f"<span>{html.escape(p['title'])}</span>"
+            f"<a class='{active}' href='{html.escape(href)}'>"
+            f"<span>{html.escape(label)}</span>"
             f"<span class='n'>{html.escape(p['num'])}</span></a>"
         )
 
@@ -1746,14 +1952,14 @@ def render_plan(plan, plans, theme_css):
     dec_blocks = []
     for d in plan.get("decisions", []):
         saved = (fb.get("decisions") or {}).get(d["id"], d.get("default"))
+        dec_id = html.escape(d["id"])
         opts_html = []
-        for o in d["options"]:
+        for o in d.get("options", []):
             opt_val = o.get("v") or o.get("value", "")
             is_sel = (saved == opt_val)
             sel_cls = " sel" if is_sel else ""
             checked = "checked" if is_sel else ""
             rec_badge = " <span style='font-size:10.5px;color:var(--green);font-weight:700'>recommended</span>" if o.get("recommended") else ""
-            dec_id = html.escape(d["id"])
             opt_v = html.escape(opt_val)
             opts_html.append(
                 f"<label class='opt{sel_cls}'>"
@@ -1761,10 +1967,15 @@ def render_plan(plan, plans, theme_css):
                 f"<span>{html.escape(o['label'])}{rec_badge}</span></label>"
             )
         d_question = d.get("q") or d.get("question", "")
+        # optional per-decision note, scoped to this plan's feedback under decisionNotes
+        saved_dnote = html.escape(((fb.get("decisionNotes") or {}).get(d["id"]) or ""))
+        dnote_ph = html.escape(d.get("notePlaceholder") or "Why this choice / notes on this decision (optional)")
         dec_blocks.append(
             f"<label class='q'>{html.escape(d_question)}</label>"
             f"<div class='help-text'>{html.escape(d.get('help',''))}</div>"
             + "".join(opts_html)
+            + f"<textarea class='dec-note' name='decnote__{dec_id}' rows='2' "
+              f"placeholder='{dnote_ph}'>{saved_dnote}</textarea>"
         )
 
     # verdict radios
@@ -1814,7 +2025,7 @@ def render_plan(plan, plans, theme_css):
     if plan.get("headline"):
         headline_html = f"<div class='card'><h2>Overview</h2><div class='headline-box'>{plan['headline']}</div></div>"
 
-    progress_card = render_progress_card(pid, progress)
+    progress_card = render_progress_card(key, progress)
 
     # audits linked to this plan
     linked_audits = [a for a in load_audits() if a.get("planId") == pid]
@@ -1849,11 +2060,11 @@ def render_plan(plan, plans, theme_css):
       {headline_html}
       {progress_card}
       {audits_card}
-      <div class='anno-content' data-srckey='{html.escape(pid)}' data-srclabel='{html.escape(plan['title'])}'>{''.join(doc_sections)}</div>
+      <div class='anno-content' data-srckey='{html.escape(key)}' data-srclabel='{html.escape(plan['title'])}'>{''.join(doc_sections)}</div>
       <div class='card fb'>
         <h2>Your feedback</h2>
         <form id='fbform'>
-          <input type='hidden' name='planId' value='{html.escape(pid)}'>
+          <input type='hidden' name='planId' value='{html.escape(key)}'>
           <input type='hidden' name='title' value='{html.escape(plan['title'])}'>
           <label class='q'>Verdict</label>
           <div class='verdict-grid'>{verdict_html}</div>
@@ -1903,6 +2114,7 @@ def render_plan(plan, plans, theme_css):
       title:     f.title.value,
       verdict:   (f.querySelector('input[name=verdict]:checked') || {{}}).value || null,
       decisions: {{}},
+      decisionNotes: {{}},
       notes:     f.notes.value,
       priority:  f.priority.value,
       assignee:  f.assignee.value,
@@ -1911,6 +2123,10 @@ def render_plan(plan, plans, theme_css):
     }};
     f.querySelectorAll('input[type=radio]:checked').forEach(r => {{
       if (r.name.startsWith('dec__')) data.decisions[r.name.slice(5)] = r.value;
+    }});
+    // per-decision optional notes; only non-empty ones are persisted
+    f.querySelectorAll('textarea[name^="decnote__"]').forEach(t => {{
+      if (t.value.trim()) data.decisionNotes[t.name.slice(9)] = t.value;
     }});
     const receipt = document.getElementById('receipt');
     try {{
@@ -1931,8 +2147,9 @@ def render_plan(plan, plans, theme_css):
   }});
 </script>"""
 
-    crumbs = f"<a href='/'>Hub</a> &nbsp;/&nbsp; Plan {html.escape(plan['num'])}"
-    return page_shell(f"{plan['title']} — Plan Review Hub", crumbs, body, theme_css, page_key=pid)
+    crumbs = (hub_crumbs(segments, leaf_label=f"Plan {plan['num']}") if segments
+              else f"<a href='/'>Hub</a> &nbsp;/&nbsp; Plan {html.escape(plan['num'])}")
+    return page_shell(f"{plan['title']} — Plan Review Hub", crumbs, body, theme_css, page_key=key)
 
 
 AUDIT_BADGE = {
@@ -2190,12 +2407,48 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             plan = plan_by_id.get(pid)
             if not plan:
                 return self._404(f"Unknown plan '{pid}'")
+            # a root entry that is really a sub-hub belongs at its own level
+            if plan.get("_is_hub"):
+                return self._redirect(hub_url((pid,)), extra_headers)
             return self._send(200, render_plan(plan, plans, theme_css), extra_headers=extra_headers)
+
+        # ── nested hubs: /hub/<a>/<b> (level index) and /hub/<a>/<b>/plan/<leaf> ──
+        if path.startswith("/hub/"):
+            rest = path[len("/hub/"):]
+            # split on the LAST '/plan/' so a sub-hub may itself be named 'plan'
+            if "/plan/" in rest:
+                hub_raw, leaf = rest.rsplit("/plan/", 1)
+                segs = parse_hub_segments(hub_raw)
+                leaf = leaf.strip("/")
+                if segs is None or not segs or not hub_exists(segs):
+                    return self._404(f"Unknown hub '{hub_raw}'")
+                sub_plans = load_plans(segs)
+                sub_plan = {p["id"]: p for p in sub_plans}.get(leaf)
+                if not sub_plan:
+                    return self._404(f"Unknown plan '{leaf}' in hub '{hub_raw}'")
+                if sub_plan.get("_is_hub"):
+                    return self._redirect(hub_url(segs + (leaf,)), extra_headers)
+                return self._send(200, render_plan(sub_plan, sub_plans, theme_css, segments=segs),
+                                  extra_headers=extra_headers)
+            segs = parse_hub_segments(rest)
+            if segs is None or not segs or not hub_exists(segs):
+                return self._404(f"Unknown hub '{rest}'")
+            return self._send(200, render_index(load_plans(segs), theme_css, segments=segs),
+                              extra_headers=extra_headers)
 
         if path.startswith("/assets/"):
             return self._serve_asset(path[len("/assets/"):], extra_headers)
 
         return self._404()
+
+    def _redirect(self, location, extra_headers=None):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self.end_headers()
 
     def _serve_asset(self, rel, extra_headers=None):
         # prevent path traversal
@@ -2318,15 +2571,21 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             pid = data.get("planId")
             if not pid:
                 raise ValueError("missing planId")
-            # validate plan exists
-            plans = load_plans()
-            plan_by_id = {p["id"]: p for p in plans}
-            if pid not in plan_by_id:
+            # validate plan exists. planId may be a scoped key ('sub/leaf') for a
+            # plan inside a nested hub; a bare id resolves against the root hub.
+            segs, leaf = split_scoped_key(pid)
+            if leaf is None:
+                raise ValueError(f"unknown planId '{pid}'")
+            if segs and not hub_exists(segs):
+                raise ValueError(f"unknown hub for planId '{pid}'")
+            plan_by_id = {p["id"]: p for p in load_plans(segs)}
+            target = plan_by_id.get(leaf)
+            if not target or target.get("_is_hub"):
                 raise ValueError(f"unknown planId '{pid}'")
         except Exception as e:
             return self._send(400, json.dumps({"ok": False, "error": str(e)}), "application/json")
 
-        out_path = os.path.join(feedback_dir(), f"{pid}.json")
+        out_path = feedback_file_path(pid)
         with open(out_path, "w") as f:
             json.dump(data, f, indent=2)
         print(f"  [feedback] {pid}: verdict={data.get('verdict')} priority={data.get('priority')} assignee={data.get('assignee')}")
