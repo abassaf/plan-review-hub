@@ -89,17 +89,24 @@ Location: `<stateDir>/feedback/<id>.json`
 
 ---
 
-## progress.json (input — updated as implementation agents land changes)
+## progress.json (input — updated on verdict submit + as implementation lands)
 
 Location: `<stateDir>/progress.json`
+
+On `POST /submit`, the server mirrors the reviewer's verdict into this file so the hub
+index badge updates immediately (`state` / `label` become `approve`, `approve_with_changes`,
+`hold`, or `reject`). If the plan is already `in_progress` / `done` / `done_merged`, that
+implementation state is preserved and only a `verdict` field is recorded.
 
 ```jsonc
 {
   "api-versioning": {
-    // State — one of: "not_started" | "in_progress" | "done"
+    // State — review: "approve" | "approve_with_changes" | "hold" | "reject"
+    //         implement: "not_started" | "in_progress" | "done" | "done_merged"
     "state":  "in_progress",
     "label":  "In progress",            // display label shown on the hub
     "branch": "feat/api-versioning",    // the worktree branch
+    "verdict": "approve",               // last submitted verdict (optional)
 
     // Completed items (rendered as ☑ in the progress card)
     "done": [
@@ -116,8 +123,9 @@ Location: `<stateDir>/progress.json`
   },
 
   "dark-mode": {
-    "state":     "not_started",
-    "label":     "Not started",
+    "state":     "approve",
+    "label":     "Approve",
+    "verdict":   "approve",
     "branch":    "feat/dark-mode",
     "done":      [],
     "remaining": []
@@ -125,7 +133,8 @@ Location: `<stateDir>/progress.json`
 }
 ```
 
-If `progress.json` does not exist, every plan is treated as "not started".
+If `progress.json` does not exist, every plan is treated as "not started" until a verdict
+is submitted or an agent writes an entry.
 
 ---
 
