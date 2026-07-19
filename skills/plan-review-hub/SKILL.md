@@ -34,32 +34,93 @@ existing set of changes):
 
 **From OpenSpec changes (auto-detected):**
 If `openspec/changes/` exists and no `plans/` directory is present, the hub auto-detects
-it. You can also add a `plan.json` inside any change directory to enrich it with decisions.
-See `examples/openspec-note.md` for details.
+it (source `auto` only runs the openspec loader when the generic loader finds nothing).
+
+**Warning — `plan.json` + OpenSpec docs can go blank:** the openspec loader auto-fills
+`docs` from `proposal.md` / `design.md` / `tasks.md`. The generic loader does **not** —
+it renders only what `plan.json` lists under `docs`, and with no `docs` field the plan
+page shows progress + feedback form but **zero documents** (no error). That happens when:
+
+- you pass `--plans <repo>/openspec/changes` (forces generic mode on those folders), or
+- a change dir has `plan.json` and is loaded via generic (e.g. non-empty `plans/` wins in `auto`)
+
+When enriching an OpenSpec change with `plan.json`, **always include an explicit `docs`
+list** (paths relative to the change dir; subdirs like `specs/<name>/spec.md` are fine):
+
+```json
+{
+  "id": "my-change",
+  "title": "My change",
+  "docs": ["proposal.md", "design.md", "tasks.md", "specs/foo/spec.md"],
+  "decisions": []
+}
+```
+
+Prefer leaving `--plans` at the default and letting `auto`/`openspec` load
+`openspec/changes/`. See `examples/openspec-note.md` for details.
 
 ---
 
 ## 2. Serve the hub
 
-Start the server bound to the LAN so the reviewer can open it in a browser:
+Start the server **detached from the agent lifecycle**. A harness-managed background task
+dies when the agent session/process exits — the reviewer then sees "could not save" and
+loses typed annotations. Use absolute paths for `--plans` and `--state`:
 
 ```bash
-# Python (recommended — zero dependencies)
-python3 scripts/serve.py --plans plans --port 8770
+# Python (recommended — zero dependencies). Detach so the server outlives this session.
+STATE_DIR=/abs/path/to/project/.planning-hub
+mkdir -p "$STATE_DIR"
+nohup python3 /abs/path/to/skills/plan-review-hub/scripts/serve.py \
+  --plans /abs/path/to/project/plans \
+  --state "$STATE_DIR" \
+  --port 8770 \
+  > "$STATE_DIR/server.log" 2>&1 & disown
 
-# or Node (built-ins only, no npm needed)
-node scripts/serve.mjs --plans plans --port 8770
+# or Node (built-ins only, no npm needed) — same detach pattern
+# nohup node .../serve.mjs --plans ... --state ... --port 8770 > "$STATE_DIR/server.log" 2>&1 & disown
+```
+
+Verify the listener (not just a one-shot curl):
+
+```bash
+lsof -nP -iTCP:8770 -sTCP:LISTEN
+curl -s http://localhost:8770/ | grep -oE '[0-9]+ plans|No plans'
 ```
 
 The server prints the hub URL and one URL per plan. Share them with the reviewer.
 The hub auto-reloads plan data on every request — edit plans without restarting.
 
+**Smoke-test the annotation save path** (form-encoded bodies only — JSON returns
+`400 {"error": "empty feedback"}` and can mislead debugging):
+
+```bash
+# add (expect {"ok": true, "id": ...})
+curl -s -X POST http://localhost:8770/anno-feedback-add \
+  --data-urlencode 'page=<plan-id>' \
+  --data-urlencode 'text=q' \
+  --data-urlencode 'comment=smoke'
+
+# remove with the returned id
+curl -s -X POST http://localhost:8770/anno-feedback-remove \
+  --data-urlencode 'page=<plan-id>' \
+  --data-urlencode 'id=<id-from-add>'
+```
+
+**Troubleshooting**
+
+- Reviewer reports **"could not save"**: first run `lsof -nP -iTCP:<port> -sTCP:LISTEN`.
+  Usual cause is a **dead server** (session-tied process exited), not permissions. Restart
+  with the `nohup ... & disown` pattern above and re-check `lsof`.
+- Blank plan documents under OpenSpec: see the `plan.json` / `docs` warning in §1 — do not
+  point `--plans` at `openspec/changes` unless every change has an explicit `docs` list.
+
 **GitHub Copilot CLI — special requirements:**
 
 Each `bash` tool call runs in a fresh process; background processes started with `&` are
-killed when that shell exits. You **must** use `mode="async"` with `detach=true`, and
-**always pass absolute paths** to `--plans` and `--state` (relative paths resolve against
-an unpredictable working directory):
+killed when that shell exits (`nohup` alone is not enough there). You **must** use
+`mode="async"` with `detach=true`, and **always pass absolute paths** to `--plans` and
+`--state` (relative paths resolve against an unpredictable working directory):
 
 ```python
 bash(
@@ -74,8 +135,9 @@ bash(
 )
 ```
 
-Verify in a follow-up call: `curl -s http://localhost:8770/ | grep -o "[0-9]* plans"`.
-To stop: `lsof -i :8770 | grep LISTEN | awk '{print $2}'` then `kill <PID>`
+Verify in a follow-up call: `lsof -nP -iTCP:8770 -sTCP:LISTEN` and
+`curl -s http://localhost:8770/ | grep -o "[0-9]* plans"`.
+To stop: `lsof -nP -iTCP:8770 -sTCP:LISTEN | awk 'NR>1{print $2}'` then `kill <PID>`
 (`pkill` is not available in the Copilot CLI environment).
 
 See `references/provider-notes.md` for the full Copilot CLI section, including plan
