@@ -124,7 +124,44 @@ function getFeedback(planId) {
 function getProgress() {
   const p = path.join(stateDir(), "progress.json");
   if (!fs.existsSync(p)) return {};
-  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (_) { return {}; }
+  try {
+    const data = JSON.parse(fs.readFileSync(p, "utf8"));
+    return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+  } catch (_) { return {}; }
+}
+
+const IMPLEMENTATION_STATES = new Set(["in_progress", "done", "done_merged"]);
+const VERDICT_LABELS = {
+  approve: "Approve",
+  approve_with_changes: "Approve with changes",
+  hold: "Hold",
+  reject: "Reject",
+};
+
+function writeProgress(progress) {
+  const p = path.join(stateDir(), "progress.json");
+  fs.mkdirSync(stateDir(), { recursive: true });
+  const tmp = p + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(progress, null, 2) + "\n");
+  fs.renameSync(tmp, p);
+}
+
+/** Mirror a submitted verdict into progress.json so the hub badge updates. */
+function applyVerdictToProgress(planId, verdict) {
+  if (!planId || !verdict) return;
+  const label = VERDICT_LABELS[verdict] || String(verdict).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  const progress = getProgress();
+  const entry = { ...(progress[planId] || {}) };
+  const current = entry.state;
+  entry.verdict = verdict;
+  if (!IMPLEMENTATION_STATES.has(current)) {
+    entry.state = verdict;
+    entry.label = label;
+    entry.done ??= [];
+    entry.remaining ??= [];
+  }
+  progress[planId] = entry;
+  writeProgress(progress);
 }
 
 // ─── audit loading ───────────────────────────────────────────────────────────────
@@ -380,8 +417,14 @@ function readPlanDoc(plan, filename) {
 
 const PROGRESS_CHIP = {
   done:        ["chip-done",        "Done"],
+  done_merged: ["chip-done",        "Done - Merged"],
   in_progress: ["chip-in-progress", "In progress"],
   not_started: ["chip-none",        "Not started"],
+  // Reviewer verdicts — written into progress.json on /submit for hub badges
+  approve:              ["chip-approve", "Approve"],
+  approve_with_changes: ["chip-awc",     "Approve with changes"],
+  hold:                 ["chip-hold",    "Hold"],
+  reject:               ["chip-reject",  "Reject"],
 };
 const VERDICT_CHIP = {
   approve:              ["chip-approve", "Approve"],
@@ -592,16 +635,25 @@ function renderIndex(plans, themeCSS) {
       const [vcls, vlabel] = VERDICT_CHIP[verdict] || ["chip-none", verdict.replace(/_/g, " ")];
       verdictChip = chip(vcls, vlabel);
     }
+    // Badge precedence: active implementation > reviewer verdict > leftover
+    // not_started progress (seeded entries must not hide Approve/Hold chips).
     const pr = progress[p.id];
     let asideHtml = "";
-    if (pr) {
-      const [pcls, plabel] = PROGRESS_CHIP[pr.state || "not_started"] || ["chip-none", pr.state];
+    const state = (pr && pr.state) || "not_started";
+    if (pr && IMPLEMENTATION_STATES.has(state)) {
+      const [pcls, plabel] = PROGRESS_CHIP[state] || ["chip-none", state];
       const ndone = (pr.done || []).length, nrem = (pr.remaining || []).length;
       const sub = ndone ? `${ndone} done · ${nrem} remaining` : (nrem ? `${nrem} steps` : "");
       asideHtml = `<div style='margin-bottom:5px'>${chip(pcls, plabel)}</div>`;
       if (sub) asideHtml += `<div style='font-size:11px;color:var(--ink-500)'>${esc(sub)}</div>`;
+    } else if (verdict) {
+      asideHtml = verdictChip;
+    } else if (pr && state !== "not_started") {
+      const [pcls, plabel0] = PROGRESS_CHIP[state] || ["chip-none", state];
+      const plabel = pr.label || plabel0;
+      asideHtml = chip(pcls, plabel);
     } else {
-      asideHtml = verdictChip || chip("chip-none", "No feedback yet");
+      asideHtml = chip("chip-none", "No feedback yet");
     }
     const effortHtml = p.effort ? `<span style='font-size:11.5px;color:var(--ink-500);margin-left:8px'>${esc(p.effort)}</span>` : "";
     return `
@@ -1093,6 +1145,8 @@ function handleRequest(req, res) {
         if (!planById[pid]) throw new Error(`unknown planId '${pid}'`);
         const outPath = path.join(feedbackDir(), `${pid}.json`);
         fs.writeFileSync(outPath, JSON.stringify(data, null, 2));
+        // Keep hub index badge in sync (progress.json preferred once any entry exists).
+        applyVerdictToProgress(pid, data.verdict);
         console.log(`  [feedback] ${pid}: verdict=${data.verdict} priority=${data.priority} assignee=${data.assignee}`);
         send(res, 200, JSON.stringify({ ok: true, planId: pid }), "application/json");
       } catch (e) {

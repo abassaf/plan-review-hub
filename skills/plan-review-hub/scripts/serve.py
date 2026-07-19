@@ -10,7 +10,7 @@ GET  /plan/<id>         single plan page (summary + docs + feedback form)
 GET  /assets/<path>     theme CSS and any other static assets
 GET  /feedback          JSON dump of all collected feedback
 GET  /healthz           200 {"status":"ok"}
-POST /submit            write feedback JSON; returns {"ok":true}
+POST /submit            write feedback JSON + mirror verdict into progress.json; returns {"ok":true}
 
 Usage:
   python3 scripts/serve.py [--port 8770] [--host 0.0.0.0]
@@ -437,9 +437,58 @@ def get_progress():
         return {}
     try:
         with open(path) as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+_progress_lock = threading.Lock()
+
+# Implementation has begun — do not overwrite these with a pure review verdict.
+_IMPLEMENTATION_STATES = frozenset({"in_progress", "done", "done_merged"})
+
+_VERDICT_LABELS = {
+    "approve":              "Approve",
+    "approve_with_changes": "Approve with changes",
+    "hold":                 "Hold",
+    "reject":               "Reject",
+}
+
+
+def write_progress(progress):
+    """Atomically rewrite <stateDir>/progress.json."""
+    path = os.path.join(state_dir(), "progress.json")
+    os.makedirs(state_dir(), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(progress, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def apply_verdict_to_progress(plan_id, verdict):
+    """Mirror a submitted verdict into progress.json so the hub badge updates.
+
+    If implementation has already started (in_progress / done / done_merged), keep
+    that state and only record the last verdict. Otherwise set state/label to the
+    verdict (including when a prior not_started entry would have hidden the chip).
+    """
+    if not plan_id or not verdict:
+        return
+    label = _VERDICT_LABELS.get(verdict, str(verdict).replace("_", " ").title())
+    with _progress_lock:
+        progress = get_progress()
+        entry = dict(progress.get(plan_id) or {})
+        current = entry.get("state")
+        entry["verdict"] = verdict
+        if current not in _IMPLEMENTATION_STATES:
+            entry["state"] = verdict
+            entry["label"] = label
+            entry.setdefault("done", [])
+            entry.setdefault("remaining", [])
+        progress[plan_id] = entry
+        write_progress(progress)
 
 
 # ─── audit loading ─────────────────────────────────────────────────────────────
@@ -617,6 +666,11 @@ PROGRESS_STATE_CHIP = {
     "done_merged":  ("chip-done",        "Done - Merged"),
     "in_progress":  ("chip-in-progress", "In progress"),
     "not_started":  ("chip-none",        "Not started"),
+    # Reviewer verdicts — written into progress.json on /submit so hub badges update
+    "approve":              ("chip-approve",   "Approve"),
+    "approve_with_changes": ("chip-awc",       "Approve with changes"),
+    "hold":                 ("chip-hold",      "Hold"),
+    "reject":               ("chip-reject",    "Reject"),
 }
 VERDICT_CHIP = {
     "approve":              ("chip-approve",   "Approve"),
@@ -1627,19 +1681,31 @@ def render_index(plans, theme_css):
             vcls, vlabel = VERDICT_CHIP.get(verdict, ("chip-none", verdict.replace("_", " ")))
             verdict_chip_html = chip(vcls, vlabel)
 
+        # Badge precedence: active implementation progress > reviewer verdict >
+        # leftover not_started progress entry. A seeded not_started must not hide
+        # an Approve/Hold/etc. chip after feedback is submitted.
         pr = progress.get(pid)
         aside_html = ""
-        if pr:
-            state = pr.get("state", "not_started")
+        state = (pr or {}).get("state") or "not_started"
+        if pr and state in _IMPLEMENTATION_STATES:
             pcls, plabel = PROGRESS_STATE_CHIP.get(state, ("chip-none", state))
+            if pr.get("label") and state not in PROGRESS_STATE_CHIP:
+                plabel = pr["label"]
             ndone = len(pr.get("done", []))
             nrem = len(pr.get("remaining", []))
             sub = f"{ndone} done · {nrem} remaining" if pr.get("done") else (f"{nrem} steps" if nrem else "")
             aside_html = f"<div style='margin-bottom:5px'>{chip(pcls, plabel)}</div>"
             if sub:
                 aside_html += f"<div style='font-size:11px;color:var(--ink-500)'>{html.escape(sub)}</div>"
+        elif verdict:
+            aside_html = verdict_chip_html
+        elif pr and state != "not_started":
+            pcls, plabel = PROGRESS_STATE_CHIP.get(state, ("chip-none", state))
+            if pr.get("label"):
+                plabel = pr["label"]
+            aside_html = chip(pcls, plabel)
         else:
-            aside_html = verdict_chip_html or chip("chip-none", "No feedback yet")
+            aside_html = chip("chip-none", "No feedback yet")
 
         effort_html = f"<span style='font-size:11.5px;color:var(--ink-500);margin-left:8px'>{html.escape(p['effort'])}</span>" if p.get('effort') else ""
         rows.append(f"""
@@ -2329,6 +2395,9 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         out_path = os.path.join(feedback_dir(), f"{pid}.json")
         with open(out_path, "w") as f:
             json.dump(data, f, indent=2)
+        # Keep hub index badge in sync: progress.json is what the badge prefers
+        # once any entry exists (e.g. agent-seeded not_started). Mirror verdict now.
+        apply_verdict_to_progress(pid, data.get("verdict"))
         print(f"  [feedback] {pid}: verdict={data.get('verdict')} priority={data.get('priority')} assignee={data.get('assignee')}")
         return self._send(200, json.dumps({"ok": True, "planId": pid}), "application/json")
 
