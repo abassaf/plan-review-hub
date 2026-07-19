@@ -9,9 +9,27 @@ provider-specific install or dispatch detail.
   Manual fallback: clone or copy into `${CODEX_HOME:-$HOME/.codex}/skills/plan-review-hub`.
 - Codex reads `SKILL.md` frontmatter for trigger metadata and can also use
   `agents/openai.yaml` for UI-facing metadata.
-- Use the standard hub commands from the skill directory:
-  `python3 scripts/serve.py --plans plans --port 8770` or
-  `node scripts/serve.mjs --plans plans --port 8770`.
+- Detach the hub from the agent lifecycle (session-tied background tasks die with the
+  agent; the reviewer then gets "could not save"). Absolute paths; log under state dir:
+
+  ```bash
+  STATE_DIR=/abs/path/to/project/.planning-hub
+  mkdir -p "$STATE_DIR"
+  nohup python3 /abs/path/to/skills/plan-review-hub/scripts/serve.py \
+    --plans /abs/path/to/project/plans \
+    --state "$STATE_DIR" \
+    --port 8770 \
+    > "$STATE_DIR/server.log" 2>&1 & disown
+  lsof -nP -iTCP:8770 -sTCP:LISTEN
+  ```
+
+- Annotation POST endpoints (`/anno-feedback-add`, etc.) take **form-encoded** bodies, not
+  JSON (`400 {"error": "empty feedback"}` on JSON is a body-format miss, not a dead server).
+  Smoke test: `curl -s -X POST http://localhost:8770/anno-feedback-add --data-urlencode
+  'page=<plan-id>' --data-urlencode 'text=q' --data-urlencode 'comment=smoke'` then
+  `/anno-feedback-remove` with `page` + returned `id`.
+- If the reviewer reports "could not save", check `lsof -nP -iTCP:<port> -sTCP:LISTEN`
+  first — usual cause is a dead server; restart detached.
 - When background agent tools are available and explicitly permitted, assign one approved
   plan per worktree. If not, implement manually in the approved worktree and keep
   `.planning-hub/progress.json` current.
@@ -19,7 +37,8 @@ provider-specific install or dispatch detail.
 ## Claude Code
 
 - Install with `npx skills add abassaf/plan-review-hub --copy`.
-- Use the same plan files, server commands, feedback files, and progress state as Codex.
+- Use the same plan files, detached server launch (`nohup … & disown`), feedback files, and
+  progress state as Codex. Verify with `lsof -nP -iTCP:<port> -sTCP:LISTEN`.
 - When launching Claude Code subagents, keep one approved plan per worktree and include the
   plan folder plus feedback file in the prompt.
 
@@ -67,10 +86,22 @@ directory, not the project root. Use `os.path.abspath` or hard-code the full pat
 
 ### Verifying the server is running
 
-After the detached launch, verify in a follow-up sync bash call:
+After the detached launch, verify in a follow-up sync bash call (listener first — a dead
+server is the usual "could not save" cause):
 
 ```python
+bash(command='lsof -nP -iTCP:8770 -sTCP:LISTEN')
 bash(command='sleep 3 && curl -s http://localhost:8770/ | grep -o "[0-9]* plans\\|No plans"')
+```
+
+Smoke-test annotations with **form-encoded** bodies (JSON → `400 empty feedback`):
+
+```python
+bash(command="curl -s -X POST http://localhost:8770/anno-feedback-add "
+             "--data-urlencode 'page=<plan-id>' "
+             "--data-urlencode 'text=q' "
+             "--data-urlencode 'comment=smoke'")
+# then /anno-feedback-remove with page + returned id
 ```
 
 ### Getting the LAN IP (to share with reviewers)
